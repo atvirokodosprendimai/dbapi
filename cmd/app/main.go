@@ -47,6 +47,16 @@ func main() {
 				Sources: cli.EnvVars("DBAPI_BOOTSTRAP_KEY_NAME"),
 				Usage:   "Name for bootstrap API key",
 			},
+			&cli.StringFlag{
+				Name:    "webhook-url",
+				Sources: cli.EnvVars("DBAPI_WEBHOOK_URL"),
+				Usage:   "Outbox event webhook target URL (enables push delivery to n8n or other receivers)",
+			},
+			&cli.StringFlag{
+				Name:    "webhook-secret",
+				Sources: cli.EnvVars("DBAPI_WEBHOOK_SECRET"),
+				Usage:   "HMAC-SHA256 signing secret for outbound webhook requests",
+			},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
 			cfg := app.Config{
@@ -55,6 +65,8 @@ func main() {
 				BootstrapAPIKey:  c.String("bootstrap-api-key"),
 				BootstrapTenant:  c.String("bootstrap-tenant"),
 				BootstrapKeyName: c.String("bootstrap-key-name"),
+				WebhookURL:       c.String("webhook-url"),
+				WebhookSecret:    c.String("webhook-secret"),
 			}
 
 			server, closer, err := app.NewServer(ctx, cfg)

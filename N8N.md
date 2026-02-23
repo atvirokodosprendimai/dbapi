@@ -388,11 +388,96 @@ This gives you a simple CRM pipeline without external SaaS lock-in.
 
 ---
 
-## 12. Future expansion ideas (n8n-friendly)
+## 12. Push events to n8n (outgoing signed webhooks)
+
+dbapi can push outbox events directly to an HTTP endpoint such as an n8n Webhook trigger,
+giving you near-real-time automations without polling.
+
+### How it works
+
+1. Every record mutation writes an outbox event atomically alongside the state and audit rows.
+2. The outbox dispatcher picks up pending events and POSTs each one to your webhook URL.
+3. The request body is the serialised `EventEnvelope` JSON.
+4. The signature header `X-Hub-Signature-256: sha256=<hex>` lets the receiver verify authenticity (same format used by GitHub webhooks).
+5. Non-2xx responses trigger the built-in retry/dead-letter policy (exponential back-off, max 5 attempts).
+
+### Request headers sent to the webhook
+
+| Header | Value |
+|--------|-------|
+| `Content-Type` | `application/json` |
+| `X-Dbapi-Topic` | e.g. `events.tenant-a.record.created` |
+| `X-Dbapi-Event-Type` | e.g. `record.created` |
+| `X-Dbapi-Tenant` | Tenant ID derived from the API key used for the mutation |
+| `X-Hub-Signature-256` | `sha256=<hex HMAC-SHA256 of body>` |
+
+### Start dbapi with webhook push enabled
+
+```bash
+go run ./cmd/app \
+  --addr :8080 \
+  --db-path ./dbapi.sqlite \
+  --bootstrap-api-key "n8n-dev-key" \
+  --bootstrap-tenant "tenant-dev" \
+  --bootstrap-key-name "n8n-local" \
+  --webhook-url "https://your-n8n-host/webhook/dbapi-events" \
+  --webhook-secret "replace-with-strong-secret"
+```
+
+Or via environment variables:
+
+```bash
+export DBAPI_WEBHOOK_URL="https://your-n8n-host/webhook/dbapi-events"
+export DBAPI_WEBHOOK_SECRET="replace-with-strong-secret"
+go run ./cmd/app --addr :8080 --db-path ./dbapi.sqlite
+```
+
+If `--webhook-url` is not set, the dispatcher falls back to logging events locally.
+
+### Verifying the signature in n8n (Code node)
+
+Add a **Code** node immediately after the Webhook trigger to verify the signature before
+processing.
+
+> **Important:** In the Webhook node settings, enable **"Raw Body"** so that the exact bytes
+> POSTed by dbapi are available for signature verification.  Without this, n8n may
+> re-serialise the JSON and the HMAC will not match.
+
+```js
+const crypto = require('crypto');
+
+const secret = 'replace-with-strong-secret';
+const rawBody = $input.item.json.rawBody; // raw request body string (requires Raw Body enabled)
+const sigHeader = $input.item.json.headers['x-hub-signature-256'] || '';
+const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+
+const sigBuffer = Buffer.from(sigHeader, 'utf8');
+const expectedBuffer = Buffer.from(expected, 'utf8');
+
+const valid =
+  sigBuffer.length === expectedBuffer.length &&
+  crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+
+if (!valid) {
+  throw new Error('Signature mismatch – request rejected');
+}
+
+return $input.item;
+```
+
+### n8n workflow: receive pushed events and branch by action
+
+1. **Webhook** trigger (path `dbapi-events`, method POST)
+2. **Code** node: verify `X-Hub-Signature-256` (see snippet above)
+3. **Switch** node on `{{ $json.body.event_type }}`:
+   - `record.created` → onboarding flow
+   - `record.updated` → enrichment / sync flow
+   - `record.deleted` → cleanup / deprovision flow
+
+### Future expansion ideas (n8n-friendly)
 
 If you want deeper integration later:
 
-- Add outgoing signed webhooks from dbapi (event push to n8n).
 - Add richer OpenAPI schema so n8n import is near plug-and-play.
 - Add query filter DSL (`field op value`) for advanced list views.
 - Add schema validation per collection for stricter contract enforcement.
@@ -414,7 +499,7 @@ What this means for n8n:
 
 - You can keep doing normal CRUD via collection endpoints.
 - You can read an immutable mutation timeline via `/v1/audit/events`.
-- You get a migration path to push-based event workflows when webhook/NATS publisher adapters are enabled.
+- You can enable push-based event delivery to n8n by setting `--webhook-url` and `--webhook-secret` (see section 12).
 
 ### Polling audit trail from n8n
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/atvirokodosprendimai/dbapi/internal/adapters/events"
@@ -12,6 +13,7 @@ import (
 	sqliteadapter "github.com/atvirokodosprendimai/dbapi/internal/adapters/sqlite"
 	"github.com/atvirokodosprendimai/dbapi/internal/adapters/sqlite/gormsqlite"
 	"github.com/atvirokodosprendimai/dbapi/internal/core/domain"
+	"github.com/atvirokodosprendimai/dbapi/internal/core/ports"
 	"github.com/atvirokodosprendimai/dbapi/internal/core/usecase"
 	"github.com/atvirokodosprendimai/dbapi/migrations"
 )
@@ -22,6 +24,8 @@ type Config struct {
 	BootstrapAPIKey  string
 	BootstrapTenant  string
 	BootstrapKeyName string
+	WebhookURL       string
+	WebhookSecret    string
 }
 
 type resourceCloser struct {
@@ -72,7 +76,22 @@ func NewServer(ctx context.Context, cfg Config) (*http.Server, io.Closer, error)
 	recordService := usecase.NewRecordService(recordStore, usecase.WithSchemaService(schemaService))
 	authService := usecase.NewAuthService(apiKeyRepo)
 	auditService := usecase.NewAuditService(auditTrailRepo)
-	dispatcher := usecase.NewOutboxDispatcher(outboxRepo, events.NewLogPublisher(), 2*time.Second, 100)
+
+	var publisher ports.EventPublisher
+	if cfg.WebhookURL != "" {
+		if cfg.WebhookSecret == "" {
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("webhook-secret is required when webhook-url is set")
+		}
+		if _, err := url.ParseRequestURI(cfg.WebhookURL); err != nil {
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("invalid webhook-url %q: %w", cfg.WebhookURL, err)
+		}
+		publisher = events.NewWebhookPublisher(cfg.WebhookURL, cfg.WebhookSecret, 10*time.Second)
+	} else {
+		publisher = events.NewLogPublisher()
+	}
+	dispatcher := usecase.NewOutboxDispatcher(outboxRepo, publisher, 2*time.Second, 100)
 	dispatcher.Start(context.Background())
 	readinessCheck := func(ctx context.Context) error {
 		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
