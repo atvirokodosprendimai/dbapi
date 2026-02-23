@@ -83,13 +83,15 @@ func NewServer(ctx context.Context, cfg Config) (*http.Server, io.Closer, error)
 			name = "bootstrap"
 		}
 
-		err := apiKeyRepo.Upsert(ctx, domain.APIKey{
+		bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := apiKeyRepo.Upsert(bootstrapCtx, domain.APIKey{
 			TokenHash: usecase.HashToken(cfg.BootstrapAPIKey),
 			TenantID:  tenant,
 			Name:      name,
 			Active:    true,
 			CreatedAt: time.Now().UTC(),
 		})
+		bootstrapCancel()
 		if err != nil {
 			_ = db.Close()
 			return nil, nil, fmt.Errorf("bootstrap api key: %w", err)

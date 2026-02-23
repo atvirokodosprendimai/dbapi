@@ -299,7 +299,7 @@ func dotPathToSQLiteJSONPath(path string) string {
 	}
 	jsonPath := "$"
 	for _, seg := range segments {
-		jsonPath += "." + seg
+		jsonPath += `."` + seg + `"`
 	}
 	return jsonPath
 }

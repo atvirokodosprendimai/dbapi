@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	gormdriver "gorm.io/driver/sqlite"
@@ -79,7 +80,7 @@ func Open(file string) (*DB, error) {
 		},
 	)
 
-	reader, err := gorm.Open(gormdriver.Dialector{DriverName: "sqlite", DSN: file}, &gorm.Config{
+	reader, err := gorm.Open(gormdriver.Dialector{DriverName: "sqlite", DSN: buildDSN(file, true)}, &gorm.Config{
 		PrepareStmt: true,
 		Logger:      newLogger,
 	})
@@ -87,7 +88,7 @@ func Open(file string) (*DB, error) {
 		return nil, fmt.Errorf("open read db: %w", err)
 	}
 
-	writer, err := gorm.Open(gormdriver.Dialector{DriverName: "sqlite", DSN: file}, &gorm.Config{
+	writer, err := gorm.Open(gormdriver.Dialector{DriverName: "sqlite", DSN: buildDSN(file, false)}, &gorm.Config{
 		PrepareStmt: true,
 		Logger:      newLogger,
 	})
@@ -119,43 +120,40 @@ func Open(file string) (*DB, error) {
 	wdb.SetConnMaxLifetime(0)
 	wdb.SetConnMaxIdleTime(0)
 
-	if err := applyPragmas(rdb, true); err != nil {
-		_ = closeGORM(reader)
-		_ = closeGORM(writer)
-		return nil, fmt.Errorf("reader pragmas: %w", err)
-	}
-	if err := applyPragmas(wdb, false); err != nil {
-		_ = closeGORM(reader)
-		_ = closeGORM(writer)
-		return nil, fmt.Errorf("writer pragmas: %w", err)
-	}
-
 	return &DB{R: reader, W: writer}, nil
 }
 
-func applyPragmas(db *sql.DB, readOnly bool) error {
-	stmts := []string{
-		"PRAGMA journal_mode = WAL;",
-		"PRAGMA synchronous = NORMAL;",
-		"PRAGMA temp_store = MEMORY;",
-		"PRAGMA wal_autocheckpoint = 1000;",
-		"PRAGMA cache_size = -20000;",
-		"PRAGMA mmap_size = 268435456;",
-		"PRAGMA foreign_keys = ON;",
-		"PRAGMA busy_timeout = 5000;",
-		"PRAGMA trusted_schema = OFF;",
+func buildDSN(file string, readOnly bool) string {
+	pragmas := []string{
+		"journal_mode(WAL)",
+		"synchronous(NORMAL)",
+		"temp_store(MEMORY)",
+		"wal_autocheckpoint(1000)",
+		"cache_size(-20000)",
+		"mmap_size(268435456)",
+		"foreign_keys(1)",
+		"busy_timeout(5000)",
+		"trusted_schema(OFF)",
 	}
 	if readOnly {
-		stmts = append(stmts, "PRAGMA query_only = ON;")
+		pragmas = append(pragmas, "query_only(1)")
 	} else {
-		stmts = append(stmts, "PRAGMA query_only = OFF;")
+		pragmas = append(pragmas, "query_only(0)")
 	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("exec %q: %w", stmt, err)
-		}
+
+	b := strings.Builder{}
+	b.WriteString(file)
+	sep := "?"
+	if strings.Contains(file, "?") {
+		sep = "&"
 	}
-	return nil
+	for _, pragma := range pragmas {
+		b.WriteString(sep)
+		b.WriteString("_pragma=")
+		b.WriteString(pragma)
+		sep = "&"
+	}
+	return b.String()
 }
 
 func closeGORM(g *gorm.DB) error {
