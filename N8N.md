@@ -451,7 +451,14 @@ const rawBody = $input.item.json.rawBody; // raw request body string (requires R
 const sigHeader = $input.item.json.headers['x-hub-signature-256'] || '';
 const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
 
-if (sigHeader !== expected) {
+const sigBuffer = Buffer.from(sigHeader, 'utf8');
+const expectedBuffer = Buffer.from(expected, 'utf8');
+
+const valid =
+  sigBuffer.length === expectedBuffer.length &&
+  crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+
+if (!valid) {
   throw new Error('Signature mismatch – request rejected');
 }
 

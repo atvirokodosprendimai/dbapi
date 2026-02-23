@@ -18,12 +18,15 @@ import (
 )
 
 func TestWebhookPublisherSuccess(t *testing.T) {
-	var gotBody []byte
-	var gotHeaders http.Header
+	type captured struct {
+		headers http.Header
+		body    []byte
+	}
+	ch := make(chan captured, 1)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeaders = r.Header.Clone()
-		gotBody, _ = io.ReadAll(r.Body)
+		body, _ := io.ReadAll(r.Body)
+		ch <- captured{headers: r.Header.Clone(), body: body}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -44,28 +47,30 @@ func TestWebhookPublisherSuccess(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	got := <-ch
+
 	// Verify headers
-	if ct := gotHeaders.Get("Content-Type"); ct != "application/json" {
+	if ct := got.headers.Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
-	if topic := gotHeaders.Get("X-Dbapi-Topic"); topic != "events.tenant-a.record.created" {
+	if topic := got.headers.Get("X-Dbapi-Topic"); topic != "events.tenant-a.record.created" {
 		t.Errorf("X-Dbapi-Topic = %q, want events.tenant-a.record.created", topic)
 	}
-	if et := gotHeaders.Get("X-Dbapi-Event-Type"); et != "record.created" {
+	if et := got.headers.Get("X-Dbapi-Event-Type"); et != "record.created" {
 		t.Errorf("X-Dbapi-Event-Type = %q, want record.created", et)
 	}
-	if ten := gotHeaders.Get("X-Dbapi-Tenant"); ten != "tenant-a" {
+	if ten := got.headers.Get("X-Dbapi-Tenant"); ten != "tenant-a" {
 		t.Errorf("X-Dbapi-Tenant = %q, want tenant-a", ten)
 	}
 
 	// Verify HMAC-SHA256 signature
-	sigHeader := gotHeaders.Get("X-Hub-Signature-256")
+	sigHeader := got.headers.Get("X-Hub-Signature-256")
 	if !strings.HasPrefix(sigHeader, "sha256=") {
 		t.Fatalf("X-Hub-Signature-256 header missing or malformed: %q", sigHeader)
 	}
 	gotSig := strings.TrimPrefix(sigHeader, "sha256=")
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(gotBody)
+	mac.Write(got.body)
 	wantSig := hex.EncodeToString(mac.Sum(nil))
 	if gotSig != wantSig {
 		t.Errorf("signature mismatch: got %q, want %q", gotSig, wantSig)
@@ -73,7 +78,7 @@ func TestWebhookPublisherSuccess(t *testing.T) {
 
 	// Verify body contains the event
 	var decoded domain.EventEnvelope
-	if err := json.Unmarshal(gotBody, &decoded); err != nil {
+	if err := json.Unmarshal(got.body, &decoded); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
 	if decoded.EventID != event.EventID {

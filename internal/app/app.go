@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/atvirokodosprendimai/dbapi/internal/adapters/events"
@@ -76,6 +77,14 @@ func NewServer(ctx context.Context, cfg Config) (*http.Server, io.Closer, error)
 
 	var publisher ports.EventPublisher
 	if cfg.WebhookURL != "" {
+		if cfg.WebhookSecret == "" {
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("webhook-secret is required when webhook-url is set")
+		}
+		if _, err := url.ParseRequestURI(cfg.WebhookURL); err != nil {
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("invalid webhook-url %q: %w", cfg.WebhookURL, err)
+		}
 		publisher = events.NewWebhookPublisher(cfg.WebhookURL, cfg.WebhookSecret, 10*time.Second)
 	} else {
 		publisher = events.NewLogPublisher()
