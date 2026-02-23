@@ -10,6 +10,7 @@ import (
 var (
 	ErrInvalidKey      = errors.New("invalid key")
 	ErrInvalidCategory = errors.New("invalid category")
+	ErrInvalidFilter   = errors.New("invalid filter")
 	ErrNotFound        = errors.New("not found")
 )
 

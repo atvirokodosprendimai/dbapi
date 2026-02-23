@@ -10,7 +10,7 @@ type RecordMutationStore interface {
 	UpsertWithEvents(ctx context.Context, rec domain.Record, meta domain.MutationMetadata) (domain.Record, error)
 	DeleteWithEvents(ctx context.Context, tenantID, collection, id string, meta domain.MutationMetadata) (bool, error)
 	Get(ctx context.Context, tenantID, collection, id string) (domain.Record, error)
-	List(ctx context.Context, tenantID, collection, prefix, after string, limit int) ([]domain.Record, error)
+	List(ctx context.Context, tenantID, collection string, filter domain.RecordListFilter) ([]domain.Record, error)
 }
 
 type AuditTrailRepository interface {

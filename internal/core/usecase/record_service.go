@@ -50,30 +50,37 @@ func (s *RecordService) Delete(ctx context.Context, tenantID, collection, id str
 	return s.store.DeleteWithEvents(ctx, tenantID, collection, id, meta)
 }
 
-func (s *RecordService) List(ctx context.Context, tenantID, collection, prefix, after string, limit int) ([]domain.Record, error) {
+func (s *RecordService) List(ctx context.Context, tenantID, collection string, filter domain.RecordListFilter) ([]domain.Record, error) {
 	if err := domain.ValidateKey(tenantID); err != nil {
 		return nil, err
 	}
 	if err := domain.ValidateCategory(collection); err != nil {
 		return nil, err
 	}
-	if prefix != "" {
-		if err := domain.ValidateKey(prefix); err != nil {
+	if filter.Prefix != "" {
+		if err := domain.ValidateKey(filter.Prefix); err != nil {
 			return nil, err
 		}
 	}
-	if after != "" {
-		if err := domain.ValidateKey(after); err != nil {
+	if filter.After != "" {
+		if err := domain.ValidateKey(filter.After); err != nil {
 			return nil, err
 		}
 	}
-	if limit <= 0 {
-		limit = 100
+	if err := filter.JSON.Validate(); err != nil {
+		return nil, err
 	}
-	if limit > 1000 {
-		limit = 1000
+	if filter.Limit <= 0 {
+		filter.Limit = 100
 	}
-	return s.store.List(ctx, tenantID, collection, prefix, after, limit)
+	if filter.Limit > 1000 {
+		filter.Limit = 1000
+	}
+	if filter.JSON.Op == "" && filter.JSON.Path != "" {
+		filter.JSON.Op = "eq"
+	}
+
+	return s.store.List(ctx, tenantID, collection, filter)
 }
 
 func (s *RecordService) BulkUpsert(ctx context.Context, tenantID, collection string, items []BulkUpsertItem, meta domain.MutationMetadata) ([]domain.Record, error) {

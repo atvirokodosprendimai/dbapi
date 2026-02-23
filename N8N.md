@@ -25,6 +25,10 @@ This service gives you two storage styles:
    - `GET /v1/collections/{collection}/records/{id}`
    - `DELETE /v1/collections/{collection}/records/{id}`
    - `GET /v1/collections/{collection}/records?prefix=&after=&limit=`
+   - JSON-path filter query params for list:
+     - `json_path=customer.email`
+     - `json_op=eq|ne|contains|exists`
+     - `json_value=...` (required for `eq|ne|contains`)
    - `POST /v1/collections/{collection}/records:bulk-upsert`
    - `POST /v1/collections/{collection}/records:bulk-delete`
 
@@ -278,6 +282,13 @@ List contacts (prefix scan):
 
 ```bash
 curl "http://localhost:8080/v1/collections/contacts/records?prefix=eu_&limit=50" \
+  -H "X-API-Key: n8n-dev-key"
+```
+
+List contacts by nested JSON path (`customer.email`):
+
+```bash
+curl "http://localhost:8080/v1/collections/contacts/records?json_path=customer.email&json_op=eq&json_value=ada@example.com" \
   -H "X-API-Key: n8n-dev-key"
 ```
 

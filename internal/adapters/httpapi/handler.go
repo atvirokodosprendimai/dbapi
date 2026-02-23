@@ -240,9 +240,16 @@ func (h *Handler) listRecords(w http.ResponseWriter, r *http.Request) {
 		r.Context(),
 		tenantID,
 		collection,
-		r.URL.Query().Get("prefix"),
-		r.URL.Query().Get("after"),
-		limit,
+		domain.RecordListFilter{
+			Prefix: r.URL.Query().Get("prefix"),
+			After:  r.URL.Query().Get("after"),
+			Limit:  limit,
+			JSON: domain.JSONPathFilter{
+				Path:  strings.TrimSpace(r.URL.Query().Get("json_path")),
+				Op:    strings.TrimSpace(r.URL.Query().Get("json_op")),
+				Value: r.URL.Query().Get("json_value"),
+			},
+		},
 	)
 	if err != nil {
 		handleDomainError(w, err)
@@ -451,6 +458,8 @@ func writeError(w http.ResponseWriter, status int, message string) {
 func handleDomainError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrInvalidCategory):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, domain.ErrInvalidFilter):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, domain.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())

@@ -14,7 +14,7 @@ type stubRecordStore struct {
 	upsertFn func(ctx context.Context, rec domain.Record, meta domain.MutationMetadata) (domain.Record, error)
 	deleteFn func(ctx context.Context, tenantID, collection, id string, meta domain.MutationMetadata) (bool, error)
 	getFn    func(ctx context.Context, tenantID, collection, id string) (domain.Record, error)
-	listFn   func(ctx context.Context, tenantID, collection, prefix, after string, limit int) ([]domain.Record, error)
+	listFn   func(ctx context.Context, tenantID, collection string, filter domain.RecordListFilter) ([]domain.Record, error)
 }
 
 func (s *stubRecordStore) UpsertWithEvents(ctx context.Context, rec domain.Record, meta domain.MutationMetadata) (domain.Record, error) {
@@ -41,9 +41,9 @@ func (s *stubRecordStore) Get(ctx context.Context, tenantID, collection, id stri
 	return domain.Record{}, nil
 }
 
-func (s *stubRecordStore) List(ctx context.Context, tenantID, collection, prefix, after string, limit int) ([]domain.Record, error) {
+func (s *stubRecordStore) List(ctx context.Context, tenantID, collection string, filter domain.RecordListFilter) ([]domain.Record, error) {
 	if s.listFn != nil {
-		return s.listFn(ctx, tenantID, collection, prefix, after, limit)
+		return s.listFn(ctx, tenantID, collection, filter)
 	}
 	return nil, nil
 }
@@ -64,15 +64,15 @@ func TestRecordServiceRejectsInvalidCollection(t *testing.T) {
 
 func TestRecordServiceListCallsStore(t *testing.T) {
 	called := false
-	svc := NewRecordService(&stubRecordStore{listFn: func(_ context.Context, tenantID, collection, prefix, after string, limit int) ([]domain.Record, error) {
+	svc := NewRecordService(&stubRecordStore{listFn: func(_ context.Context, tenantID, collection string, filter domain.RecordListFilter) ([]domain.Record, error) {
 		called = true
-		if tenantID != "tenant-a" || collection != "contacts" || limit != 10 {
-			t.Fatalf("unexpected params: %s %s %d", tenantID, collection, limit)
+		if tenantID != "tenant-a" || collection != "contacts" || filter.Limit != 10 {
+			t.Fatalf("unexpected params: %s %s %d", tenantID, collection, filter.Limit)
 		}
 		return []domain.Record{{TenantID: tenantID, Collection: collection, ID: "1", Data: json.RawMessage(`{"name":"a"}`)}}, nil
 	}})
 
-	recs, err := svc.List(context.Background(), "tenant-a", "contacts", "", "", 10)
+	recs, err := svc.List(context.Background(), "tenant-a", "contacts", domain.RecordListFilter{Limit: 10})
 	if err != nil {
 		t.Fatalf("list failed: %v", err)
 	}
@@ -81,5 +81,21 @@ func TestRecordServiceListCallsStore(t *testing.T) {
 	}
 	if len(recs) != 1 || recs[0].ID != "1" {
 		t.Fatalf("unexpected records: %+v", recs)
+	}
+}
+
+func TestRecordServiceListRejectsInvalidJSONFilter(t *testing.T) {
+	svc := NewRecordService(&stubRecordStore{})
+
+	_, err := svc.List(context.Background(), "tenant-a", "contacts", domain.RecordListFilter{
+		Limit: 10,
+		JSON: domain.JSONPathFilter{
+			Path:  "customer email",
+			Op:    "eq",
+			Value: "ada@example.com",
+		},
+	})
+	if !errors.Is(err, domain.ErrInvalidFilter) {
+		t.Fatalf("expected invalid filter, got %v", err)
 	}
 }

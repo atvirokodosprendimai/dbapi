@@ -56,7 +56,7 @@ func (s *stubRepo) Scan(ctx context.Context, filter domain.ScanFilter) ([]domain
 
 type stubRecordStore struct {
 	getFn    func(ctx context.Context, tenantID, collection, id string) (domain.Record, error)
-	listFn   func(ctx context.Context, tenantID, collection, prefix, after string, limit int) ([]domain.Record, error)
+	listFn   func(ctx context.Context, tenantID, collection string, filter domain.RecordListFilter) ([]domain.Record, error)
 	upsertFn func(ctx context.Context, rec domain.Record, meta domain.MutationMetadata) (domain.Record, error)
 	deleteFn func(ctx context.Context, tenantID, collection, id string, meta domain.MutationMetadata) (bool, error)
 }
@@ -82,9 +82,9 @@ func (s *stubRecordStore) Get(ctx context.Context, tenantID, collection, id stri
 	return domain.Record{}, nil
 }
 
-func (s *stubRecordStore) List(ctx context.Context, tenantID, collection, prefix, after string, limit int) ([]domain.Record, error) {
+func (s *stubRecordStore) List(ctx context.Context, tenantID, collection string, filter domain.RecordListFilter) ([]domain.Record, error) {
 	if s.listFn != nil {
-		return s.listFn(ctx, tenantID, collection, prefix, after, limit)
+		return s.listFn(ctx, tenantID, collection, filter)
 	}
 	return nil, nil
 }
@@ -147,6 +147,17 @@ func TestUpsertRejectsTrailingJSON(t *testing.T) {
 func TestScanBadLimitReturnsBadRequest(t *testing.T) {
 	h := testRouter(&stubRepo{})
 	req := httptest.NewRequest(http.MethodGet, "/v1/kv?limit=bad", nil)
+	withAuth(req)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestListRecordsInvalidJSONPathFilter(t *testing.T) {
+	h := testRouter(&stubRepo{})
+	req := httptest.NewRequest(http.MethodGet, "/v1/collections/contacts/records?json_path=bad%20path&json_op=eq&json_value=x", nil)
 	withAuth(req)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

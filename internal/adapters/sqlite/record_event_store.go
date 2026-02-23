@@ -241,21 +241,37 @@ func (s *RecordEventStore) Get(ctx context.Context, tenantID, collection, id str
 	}, nil
 }
 
-func (s *RecordEventStore) List(ctx context.Context, tenantID, collection, prefix, after string, limit int) ([]domain.Record, error) {
+func (s *RecordEventStore) List(ctx context.Context, tenantID, collection string, filter domain.RecordListFilter) ([]domain.Record, error) {
 	keyPrefix := recordPrefix(tenantID, collection)
 	var models []entryModel
 	err := s.db.ReadTX(ctx, func(tx *gormsqlite.Tx) error {
 		query := tx.Model(&entryModel{}).Where("category = ?", recordCategory(tenantID, collection))
-		if prefix != "" {
-			start := keyPrefix + prefix
+		if filter.Prefix != "" {
+			start := keyPrefix + filter.Prefix
 			query = query.Where("key >= ? AND key < ?", start, start+"\uffff")
 		} else {
 			query = query.Where("key >= ? AND key < ?", keyPrefix, keyPrefix+"\uffff")
 		}
-		if after != "" {
-			query = query.Where("key > ?", keyPrefix+after)
+		if filter.After != "" {
+			query = query.Where("key > ?", keyPrefix+filter.After)
 		}
-		return query.Order("key ASC").Limit(limit).Find(&models).Error
+
+		if filter.JSON.Path != "" {
+			jsonPath := dotPathToSQLiteJSONPath(filter.JSON.Path)
+			switch filter.JSON.Op {
+			case "eq":
+				query = query.Where("CAST(json_extract(value, ?) AS TEXT) = ?", jsonPath, filter.JSON.Value)
+			case "ne":
+				query = query.Where("CAST(json_extract(value, ?) AS TEXT) <> ?", jsonPath, filter.JSON.Value)
+			case "contains":
+				query = query.Where("instr(lower(CAST(json_extract(value, ?) AS TEXT)), lower(?)) > 0", jsonPath, filter.JSON.Value)
+			case "exists":
+				query = query.Where("json_type(value, ?) IS NOT NULL", jsonPath)
+			default:
+				return domain.ErrInvalidFilter
+			}
+		}
+		return query.Order("key ASC").Limit(filter.Limit).Find(&models).Error
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list records: %w", err)
@@ -274,6 +290,18 @@ func (s *RecordEventStore) List(ctx context.Context, tenantID, collection, prefi
 		})
 	}
 	return result, nil
+}
+
+func dotPathToSQLiteJSONPath(path string) string {
+	segments := domain.SplitJSONPath(path)
+	if len(segments) == 0 {
+		return "$"
+	}
+	jsonPath := "$"
+	for _, seg := range segments {
+		jsonPath += "." + seg
+	}
+	return jsonPath
 }
 
 func nextAggregateVersion(tx *gorm.DB, tenantID, collection, id string) (int64, error) {
