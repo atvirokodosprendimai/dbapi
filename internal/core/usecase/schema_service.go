@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 
 	santhosh "github.com/santhosh-tekuri/jsonschema/v5"
@@ -93,12 +94,20 @@ func (s *SchemaService) Validate(ctx context.Context, tenantID, collection strin
 
 // compileSchema builds a *santhosh.Schema from raw JSON.
 func compileSchema(schemaJSON json.RawMessage) (*santhosh.Schema, error) {
-	compiler := santhosh.NewCompiler()
-	compiler.Draft = santhosh.Draft7
+	compiler := newSchemaCompiler()
 	if err := compiler.AddResource("schema.json", bytes.NewReader(schemaJSON)); err != nil {
 		return nil, err
 	}
 	return compiler.Compile("schema.json")
+}
+
+func newSchemaCompiler() *santhosh.Compiler {
+	compiler := santhosh.NewCompiler()
+	compiler.Draft = santhosh.Draft7
+	compiler.LoadURL = func(u string) (io.ReadCloser, error) {
+		return nil, fmt.Errorf("external schema refs are not allowed: %s", u)
+	}
+	return compiler
 }
 
 // runValidation validates data against a pre-compiled schema.

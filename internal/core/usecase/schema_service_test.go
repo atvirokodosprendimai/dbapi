@@ -81,6 +81,14 @@ func TestSchemaServiceUpsertRejectsInvalidSchemaDocument(t *testing.T) {
 	}
 }
 
+func TestSchemaServiceUpsertRejectsExternalSchemaRef(t *testing.T) {
+	svc := NewSchemaService(newStubSchemaRepo())
+	_, err := svc.Upsert(context.Background(), "tenant-a", "contacts", json.RawMessage(`{"$ref":"https://example.com/schema.json"}`))
+	if err == nil {
+		t.Fatal("expected error for external schema ref")
+	}
+}
+
 func TestSchemaServiceGetMissingReturnsNotFound(t *testing.T) {
 	svc := NewSchemaService(newStubSchemaRepo())
 	_, err := svc.Get(context.Background(), "tenant-a", "contacts")

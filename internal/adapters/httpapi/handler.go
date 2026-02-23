@@ -752,6 +752,11 @@ func openapiSpec() map[string]any {
 			"/v1/collections/{collection}/records": map[string]any{
 				"get": map[string]any{"summary": "List records"},
 			},
+			"/v1/collections/{collection}/schema": map[string]any{
+				"put":    map[string]any{"summary": "Upsert collection schema"},
+				"get":    map[string]any{"summary": "Get collection schema"},
+				"delete": map[string]any{"summary": "Delete collection schema"},
+			},
 			"/v1/collections/{collection}/records/{id}": map[string]any{
 				"put":    map[string]any{"summary": "Upsert record"},
 				"get":    map[string]any{"summary": "Get record"},

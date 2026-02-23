@@ -225,6 +225,18 @@ func TestOpenAPIEndpoint(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
+
+	var spec map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("decode openapi response: %v", err)
+	}
+	pathsAny, ok := spec["paths"].(map[string]any)
+	if !ok {
+		t.Fatalf("openapi paths missing or invalid: %T", spec["paths"])
+	}
+	if _, ok := pathsAny["/v1/collections/{collection}/schema"]; !ok {
+		t.Fatalf("openapi missing schema endpoint path")
+	}
 }
 
 func TestReadinessEndpoint(t *testing.T) {
