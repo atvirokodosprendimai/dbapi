@@ -1,0 +1,144 @@
+name: Copilot Issue Triage
+
+on:
+  issues:
+    types: [opened, reopened]
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, edited, reopened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  triage-new-bug-or-feature:
+    if: >-
+      github.event_name == 'issues' &&
+      (contains(join(github.event.issue.labels.*.name, ','), 'bug') ||
+       contains(join(github.event.issue.labels.*.name, ','), 'enhancement'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add needs-triage and ask Copilot for spec PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- copilot-issue-triage -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.issue.number;
+
+            const allLabels = await github.paginate(github.rest.issues.listLabelsForRepo, {
+              owner,
+              repo,
+              per_page: 100,
+            });
+            const hasNeedsTriage = allLabels.some((l) => l.name === 'needs-triage');
+            if (!hasNeedsTriage) {
+              await github.rest.issues.createLabel({
+                owner,
+                repo,
+                name: 'needs-triage',
+                color: 'd4c5f9',
+                description: 'New issue waiting for triage/spec PR',
+              });
+            }
+
+            const labels = context.payload.issue.labels.map((l) => l.name);
+            if (!labels.includes('needs-triage')) {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number,
+                labels: ['needs-triage'],
+              });
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const alreadyPosted = comments.some((c) =>
+              c.user?.login === 'github-actions[bot]' && c.body?.includes(marker)
+            );
+            if (alreadyPosted) return;
+
+            const body = [
+              marker,
+              '@copilot please triage this issue by creating a draft PR that adds or updates specs only (no feature code yet).',
+              '',
+              'Requirements:',
+              '- Follow SDD workflow from `.github/copilot-instructions.md`.',
+              '- Write/adjust spec artifacts under `specs/`.',
+              '- Include acceptance criteria and verification commands.',
+              '- Keep the PR focused on specification and plan artifacts first.',
+              '',
+              'After the spec PR is ready, we will explicitly request implementation in a follow-up `@copilot` comment.',
+            ].join('\n');
+
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+
+  relay-copilot-implement-requests:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, '@copilot') &&
+      github.event.comment.user.login != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Relay implement request to Copilot
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- copilot-issue-relay -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.issue.number;
+            const raw = context.payload.comment.body || '';
+
+            const cleaned = raw.replace(/@copilot/gi, '').trim();
+            const task = cleaned.length > 0
+              ? cleaned
+              : 'Please implement the approved spec and open or update a PR.';
+
+            const body = [
+              marker,
+              `@copilot ${task}`,
+              '',
+              'Use `.github/copilot-instructions.md` and follow SDD verification with tests.',
+            ].join('\n');
+
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+
+  remove-needs-triage-when-pr-links-issue:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove needs-triage from linked issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const body = context.payload.pull_request?.body || '';
+
+            const regex = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/ig;
+            const issueNumbers = new Set();
+            let match;
+            while ((match = regex.exec(body)) !== null) {
+              issueNumbers.add(Number(match[1]));
+            }
+
+            for (const issue_number of issueNumbers) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number,
+                  name: 'needs-triage',
+                });
+              } catch (err) {
+                if (err.status !== 404) throw err;
+              }
+            }
