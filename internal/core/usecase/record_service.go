@@ -10,16 +10,35 @@ import (
 )
 
 type RecordService struct {
-	store ports.RecordMutationStore
+	store   ports.RecordMutationStore
+	schemas *SchemaService
 }
 
-func NewRecordService(store ports.RecordMutationStore) *RecordService {
-	return &RecordService{store: store}
+func NewRecordService(store ports.RecordMutationStore, opts ...RecordServiceOption) *RecordService {
+	svc := &RecordService{store: store}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
+}
+
+// RecordServiceOption configures a RecordService.
+type RecordServiceOption func(*RecordService)
+
+// WithSchemaService attaches a SchemaService to enforce per-collection JSON
+// schema validation on write operations.
+func WithSchemaService(schemas *SchemaService) RecordServiceOption {
+	return func(s *RecordService) { s.schemas = schemas }
 }
 
 func (s *RecordService) Upsert(ctx context.Context, rec domain.Record, meta domain.MutationMetadata) (domain.Record, error) {
 	if err := rec.Validate(); err != nil {
 		return domain.Record{}, err
+	}
+	if s.schemas != nil {
+		if err := s.schemas.Validate(ctx, rec.TenantID, rec.Collection, rec.Data); err != nil {
+			return domain.Record{}, err
+		}
 	}
 	return s.store.UpsertWithEvents(ctx, rec, meta)
 }

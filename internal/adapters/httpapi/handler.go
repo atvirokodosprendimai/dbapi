@@ -31,6 +31,7 @@ type Handler struct {
 	recordService *usecase.RecordService
 	authService   *usecase.AuthService
 	auditService  *usecase.AuditService
+	schemaService *usecase.SchemaService
 	readinessFn   func(context.Context) error
 	extraMetrics  func() map[string]int64
 	metrics       handlerMetrics
@@ -50,8 +51,8 @@ func WithExtraMetrics(fn func() map[string]int64) Option {
 	}
 }
 
-func NewHandler(kvService *usecase.KVService, recordService *usecase.RecordService, authService *usecase.AuthService, auditService *usecase.AuditService, opts ...Option) *Handler {
-	h := &Handler{kvService: kvService, recordService: recordService, authService: authService, auditService: auditService}
+func NewHandler(kvService *usecase.KVService, recordService *usecase.RecordService, authService *usecase.AuthService, auditService *usecase.AuditService, schemaService *usecase.SchemaService, opts ...Option) *Handler {
+	h := &Handler{kvService: kvService, recordService: recordService, authService: authService, auditService: auditService, schemaService: schemaService}
 	for _, opt := range opts {
 		opt(h)
 	}
@@ -79,6 +80,9 @@ func (h *Handler) Router() http.Handler {
 		pr.Delete("/v1/collections/{collection}/records/{id}", h.deleteRecord)
 		pr.Post("/v1/collections/{collection}/records:bulk-upsert", h.bulkUpsertRecords)
 		pr.Post("/v1/collections/{collection}/records:bulk-delete", h.bulkDeleteRecords)
+		pr.Put("/v1/collections/{collection}/schema", h.upsertCollectionSchema)
+		pr.Get("/v1/collections/{collection}/schema", h.getCollectionSchema)
+		pr.Delete("/v1/collections/{collection}/schema", h.deleteCollectionSchema)
 		pr.Get("/v1/audit/events", h.listAuditEvents)
 	})
 
@@ -361,6 +365,57 @@ func (h *Handler) bulkDeleteRecords(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, payload)
 }
 
+func (h *Handler) upsertCollectionSchema(w http.ResponseWriter, r *http.Request) {
+	collection := chi.URLParam(r, "collection")
+	tenantID := tenantIDFromContext(r.Context())
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
+	decoder := json.NewDecoder(r.Body)
+	var schemaJSON json.RawMessage
+	if err := decoder.Decode(&schemaJSON); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if err := ensureEOF(decoder); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+
+	cs, err := h.schemaService.Upsert(r.Context(), tenantID, collection, schemaJSON)
+	if err != nil {
+		handleDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toSchemaResponse(cs))
+}
+
+func (h *Handler) getCollectionSchema(w http.ResponseWriter, r *http.Request) {
+	collection := chi.URLParam(r, "collection")
+	tenantID := tenantIDFromContext(r.Context())
+
+	cs, err := h.schemaService.Get(r.Context(), tenantID, collection)
+	if err != nil {
+		handleDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toSchemaResponse(cs))
+}
+
+func (h *Handler) deleteCollectionSchema(w http.ResponseWriter, r *http.Request) {
+	collection := chi.URLParam(r, "collection")
+	tenantID := tenantIDFromContext(r.Context())
+
+	deleted, err := h.schemaService.Delete(r.Context(), tenantID, collection)
+	if err != nil {
+		handleDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": deleted})
+}
+
 func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -452,6 +507,22 @@ func (h *Handler) requireAPIKey(next http.Handler) http.Handler {
 	})
 }
 
+type schemaResponse struct {
+	Collection string          `json:"collection"`
+	Schema     json.RawMessage `json:"schema"`
+	CreatedAt  string          `json:"created_at"`
+	UpdatedAt  string          `json:"updated_at"`
+}
+
+func toSchemaResponse(cs domain.CollectionSchema) schemaResponse {
+	return schemaResponse{
+		Collection: cs.Collection,
+		Schema:     cs.Schema,
+		CreatedAt:  cs.CreatedAt.UTC().Format(timeFormat),
+		UpdatedAt:  cs.UpdatedAt.UTC().Format(timeFormat),
+	}
+}
+
 func toItemResponse(item domain.Item) itemResponse {
 	return itemResponse{
 		Key:       item.Key,
@@ -505,7 +576,13 @@ func writeError(w http.ResponseWriter, status int, message string) {
 }
 
 func handleDomainError(w http.ResponseWriter, err error) {
+	var schemaErr *domain.ErrSchemaViolation
 	switch {
+	case errors.As(err, &schemaErr):
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":  "schema validation failed",
+			"errors": schemaErr.Errors,
+		})
 	case errors.Is(err, domain.ErrInvalidKey), errors.Is(err, domain.ErrInvalidCategory):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, domain.ErrInvalidFilter):

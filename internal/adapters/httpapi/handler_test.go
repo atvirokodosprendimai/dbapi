@@ -113,7 +113,7 @@ func testRouterWithOptions(repo *stubRepo, opts ...Option) http.Handler {
 	records := usecase.NewRecordService(&stubRecordStore{})
 	auth := usecase.NewAuthService(&stubAPIKeyRepo{})
 	audit := usecase.NewAuditService(&stubAuditTrailRepo{})
-	return NewHandler(kv, records, auth, audit, opts...).Router()
+	return NewHandler(kv, records, auth, audit, nil, opts...).Router()
 }
 
 func withAuth(req *http.Request) { req.Header.Set("X-API-Key", testAPIKey) }

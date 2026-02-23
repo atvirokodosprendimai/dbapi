@@ -62,12 +62,14 @@ func NewServer(ctx context.Context, cfg Config) (*http.Server, io.Closer, error)
 
 	repo := sqliteadapter.NewRepository(db)
 	recordStore := sqliteadapter.NewRecordEventStore(db)
+	schemaRepo := sqliteadapter.NewSchemaRepository(db)
 	apiKeyRepo := sqliteadapter.NewAPIKeyRepository(db)
 	auditTrailRepo := sqliteadapter.NewAuditTrailRepository(db)
 	outboxRepo := sqliteadapter.NewOutboxRepository(db)
 
 	kvService := usecase.NewKVService(repo)
-	recordService := usecase.NewRecordService(recordStore)
+	schemaService := usecase.NewSchemaService(schemaRepo)
+	recordService := usecase.NewRecordService(recordStore, usecase.WithSchemaService(schemaService))
 	authService := usecase.NewAuthService(apiKeyRepo)
 	auditService := usecase.NewAuditService(auditTrailRepo)
 	dispatcher := usecase.NewOutboxDispatcher(outboxRepo, events.NewLogPublisher(), 2*time.Second, 100)
@@ -108,6 +110,7 @@ func NewServer(ctx context.Context, cfg Config) (*http.Server, io.Closer, error)
 		recordService,
 		authService,
 		auditService,
+		schemaService,
 		httpapi.WithReadinessCheck(readinessCheck),
 		httpapi.WithExtraMetrics(func() map[string]int64 {
 			m := dispatcher.Metrics()
