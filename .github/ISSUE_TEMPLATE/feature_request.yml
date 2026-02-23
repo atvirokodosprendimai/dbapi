@@ -1,0 +1,14 @@
+name: Feature Request
+description: Request a feature with a minimal required field
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: feature
+    attributes:
+      label: Feature
+      description: Describe the feature you want.
+      placeholder: What capability should be added?
+    validations:
+      required: true

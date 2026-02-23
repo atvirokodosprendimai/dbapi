@@ -1,0 +1,14 @@
+name: Bug Report
+description: Report a bug with a minimal required field
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the bug you are seeing.
+      placeholder: What happened? What did you expect?
+    validations:
+      required: true
