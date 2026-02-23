@@ -3,8 +3,6 @@ name: Copilot PR Review
 on:
   pull_request_target:
     types: [opened, reopened, ready_for_review, synchronize]
-  issue_comment:
-    types: [created]
 
 permissions:
   contents: read
@@ -16,66 +14,47 @@ jobs:
     if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
-      - name: Ask Copilot to review PR
+      - name: Request Copilot PR review
         uses: actions/github-script@v7
+        env:
+          COPILOT_REVIEWER: ${{ vars.COPILOT_REVIEWER || 'copilot-swe-agent' }}
         with:
           script: |
             const pr = context.payload.pull_request;
             if (!pr) return;
             if (pr.draft) return;
 
-            const marker = '<!-- copilot-auto-review -->';
             const { owner, repo } = context.repo;
-            const issue_number = pr.number;
+            const pull_number = pr.number;
+            const reviewer = process.env.COPILOT_REVIEWER;
+            const marker = '<!-- copilot-auto-review-fallback -->';
 
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner,
-              repo,
-              issue_number,
-              per_page: 100,
-            });
+            try {
+              await github.rest.pulls.requestReviewers({
+                owner,
+                repo,
+                pull_number,
+                reviewers: [reviewer],
+              });
+            } catch (err) {
+              core.warning(`Unable to request reviewer ${reviewer}: ${err.message}`);
 
-            const alreadyRequested = comments.some((c) =>
-              c.user?.login === 'github-actions[bot]' && c.body?.includes(marker)
-            );
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: pull_number,
+                per_page: 100,
+              });
+              const alreadyPosted = comments.some((c) =>
+                c.user?.login === 'github-actions[bot]' && c.body?.includes(marker)
+              );
+              if (alreadyPosted) return;
 
-            if (alreadyRequested) return;
+              const body = [
+                marker,
+                `Automatic Copilot review request could not be created for reviewer \`${reviewer}\`.`,
+                'Please request **Copilot** from the PR Reviewers menu, or comment as a human with `@copilot review`.',
+              ].join('\n\n');
 
-            const body = [
-              marker,
-              '@copilot please review this pull request.',
-              '',
-              'Focus on correctness, security, reliability, and test coverage.',
-              'Use repository instructions from `.github/copilot-instructions.md` and `specs/` artifacts.',
-            ].join('\n');
-
-            await github.rest.issues.createComment({ owner, repo, issue_number, body });
-
-  relay-copilot-mentions:
-    if: >-
-      github.event_name == 'issue_comment' &&
-      github.event.issue.pull_request != null &&
-      contains(github.event.comment.body, '@copilot') &&
-      github.event.comment.user.login != 'github-actions[bot]'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Relay mention as explicit Copilot task
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const marker = '<!-- copilot-relay -->';
-            const { owner, repo } = context.repo;
-            const issue_number = context.payload.issue.number;
-            const original = context.payload.comment.body || '';
-
-            const normalized = original.replace(/@copilot/gi, '').trim();
-            const task = normalized.length > 0
-              ? normalized
-              : 'Please review the latest PR changes and suggest concrete fixes.';
-
-            const body = [
-              marker,
-              `@copilot ${task}`,
-            ].join('\n');
-
-            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+              await github.rest.issues.createComment({ owner, repo, issue_number: pull_number, body });
+            }
