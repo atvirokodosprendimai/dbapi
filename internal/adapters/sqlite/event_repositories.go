@@ -138,3 +138,15 @@ func (r *OutboxRepository) MarkFailed(ctx context.Context, id int64, attempts in
 	}
 	return nil
 }
+
+func (r *OutboxRepository) MarkDead(ctx context.Context, id int64, attempts int, errMsg string) error {
+	err := r.db.WriteTX(ctx, func(tx *gormsqlite.Tx) error {
+		return tx.Model(&outboxEventModel{}).
+			Where("id = ?", id).
+			Updates(map[string]any{"status": "dead", "attempts": attempts, "last_error": errMsg}).Error
+	})
+	if err != nil {
+		return fmt.Errorf("mark outbox dead: %w", err)
+	}
+	return nil
+}

@@ -17,6 +17,7 @@ type OutboxDispatcher struct {
 	publisher ports.EventPublisher
 	interval  time.Duration
 	batchSize int
+	maxRetry  int
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -30,7 +31,7 @@ func NewOutboxDispatcher(repo ports.OutboxRepository, publisher ports.EventPubli
 	if batchSize <= 0 {
 		batchSize = 50
 	}
-	return &OutboxDispatcher{repo: repo, publisher: publisher, interval: interval, batchSize: batchSize}
+	return &OutboxDispatcher{repo: repo, publisher: publisher, interval: interval, batchSize: batchSize, maxRetry: 5}
 }
 
 func (d *OutboxDispatcher) Start(parent context.Context) {
@@ -83,14 +84,12 @@ func (d *OutboxDispatcher) dispatchBatch(ctx context.Context) error {
 	for _, event := range events {
 		var envelope domain.EventEnvelope
 		if err := json.Unmarshal(event.PayloadJSON, &envelope); err != nil {
-			next := time.Now().UTC().Add(backoffDuration(event.Attempts + 1)).Format(time.RFC3339Nano)
-			_ = d.repo.MarkFailed(ctx, event.ID, event.Attempts+1, next, fmt.Sprintf("decode payload: %v", err))
+			_ = d.markFailure(ctx, event, fmt.Sprintf("decode payload: %v", err))
 			continue
 		}
 
 		if err := d.publisher.Publish(ctx, event.Topic, envelope); err != nil {
-			next := time.Now().UTC().Add(backoffDuration(event.Attempts + 1)).Format(time.RFC3339Nano)
-			_ = d.repo.MarkFailed(ctx, event.ID, event.Attempts+1, next, err.Error())
+			_ = d.markFailure(ctx, event, err.Error())
 			continue
 		}
 
@@ -100,6 +99,15 @@ func (d *OutboxDispatcher) dispatchBatch(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (d *OutboxDispatcher) markFailure(ctx context.Context, event domain.OutboxEvent, errMsg string) error {
+	attempts := event.Attempts + 1
+	if attempts >= d.maxRetry {
+		return d.repo.MarkDead(ctx, event.ID, attempts, errMsg)
+	}
+	next := time.Now().UTC().Add(backoffDuration(attempts)).Format(time.RFC3339Nano)
+	return d.repo.MarkFailed(ctx, event.ID, attempts, next, errMsg)
 }
 
 func backoffDuration(attempt int) time.Duration {

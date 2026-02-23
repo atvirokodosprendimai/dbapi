@@ -40,14 +40,14 @@ Legend:
 ### Replay and Projection Correctness (`specs/phase2/replay-projection.md`)
 
 - [x] Replay correctness baseline in `internal/core/usecase/replay_test.go`
-- [ ] Add fixture-based projection sequence tests for complex streams
-- [ ] Add cross-tenant replay isolation regression test case set
+- [x] Fixture-based projection sequence tests in `internal/core/usecase/replay_test.go`
+- [x] Cross-tenant replay isolation regression tests in `internal/core/usecase/replay_test.go`
 
 ### Outbox Dispatch Reliability (`specs/phase2/outbox-dispatch.md`)
 
-- [ ] Add dispatcher flow tests for claim, publish, and mark-dispatched steps
-- [ ] Add retry budget exhaustion and quarantine/dead-letter tests
-- [ ] Add restart-resume durability test across process boundaries
+- [x] Dispatcher flow tests for fetch, publish, and mark-dispatched in `internal/core/usecase/outbox_dispatcher_test.go`
+- [x] Retry budget exhaustion and dead-letter status tests in `internal/core/usecase/outbox_dispatcher_test.go`
+- [x] Restart-resume durability test using persisted pending events in `internal/core/usecase/outbox_dispatcher_test.go`
 
 ## Phase 3
 

@@ -21,4 +21,5 @@ type OutboxRepository interface {
 	FetchPending(ctx context.Context, limit int) ([]domain.OutboxEvent, error)
 	MarkDispatched(ctx context.Context, id int64) error
 	MarkFailed(ctx context.Context, id int64, attempts int, nextAttemptAt string, errMsg string) error
+	MarkDead(ctx context.Context, id int64, attempts int, errMsg string) error
 }

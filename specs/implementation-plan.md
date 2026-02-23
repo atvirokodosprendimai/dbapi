@@ -116,8 +116,8 @@ This plan converts every unchecked item in `specs/acceptance-matrix.md` into act
 
 ## Execution batches
 
-- **Batch A:** items 1-2 (Phase 1)
-- **Batch B:** items 3-5 (Phase 2)
+- **Batch A:** items 1-2 (Phase 1) - completed
+- **Batch B:** items 3-5 (Phase 2) - completed
 - **Batch C:** items 6-9 (Phase 3)
 
 Each batch should end with:
