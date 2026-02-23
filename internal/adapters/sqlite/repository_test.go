@@ -2,17 +2,13 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/atvirokodosprendimai/dbapi/internal/adapters/sqlite/gormsqlite"
 	"github.com/atvirokodosprendimai/dbapi/internal/core/domain"
 	"github.com/atvirokodosprendimai/dbapi/migrations"
-	gormsqlite "gorm.io/driver/sqlite"
-	"gorm.io/gorm"
-	_ "modernc.org/sqlite"
 )
 
 func TestRepositoryScanByCategoryAndPrefix(t *testing.T) {
@@ -20,24 +16,21 @@ func TestRepositoryScanByCategoryAndPrefix(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := gormsqlite.Open(dbPath)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = db.Close()
-		_ = os.Remove(dbPath)
-	})
+	t.Cleanup(func() { _ = db.Close() })
 
-	if err := migrations.Up(ctx, db); err != nil {
+	wdb, err := db.WriteSQLDB()
+	if err != nil {
+		t.Fatalf("writer sql db: %v", err)
+	}
+
+	if err := migrations.Up(ctx, wdb); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-
-	gormDB, err := gorm.Open(gormsqlite.Dialector{DriverName: "sqlite", Conn: db}, &gorm.Config{})
-	if err != nil {
-		t.Fatalf("open gorm: %v", err)
-	}
-	repo := NewRepository(gormDB)
+	repo := NewRepository(db)
 
 	seed := []domain.Item{
 		{Key: "user:1", Category: "users", Value: json.RawMessage(`{"name":"A"}`)},
@@ -68,19 +61,21 @@ func TestMigrateIsIdempotent(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "migrate.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := gormsqlite.Open(dbPath)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = db.Close()
-		_ = os.Remove(dbPath)
-	})
+	t.Cleanup(func() { _ = db.Close() })
 
-	if err := migrations.Up(ctx, db); err != nil {
+	wdb, err := db.WriteSQLDB()
+	if err != nil {
+		t.Fatalf("writer sql db: %v", err)
+	}
+
+	if err := migrations.Up(ctx, wdb); err != nil {
 		t.Fatalf("first migrate: %v", err)
 	}
-	if err := migrations.Up(ctx, db); err != nil {
+	if err := migrations.Up(ctx, wdb); err != nil {
 		t.Fatalf("second migrate: %v", err)
 	}
 }

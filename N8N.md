@@ -28,6 +28,9 @@ This service gives you two storage styles:
    - `POST /v1/collections/{collection}/records:bulk-upsert`
    - `POST /v1/collections/{collection}/records:bulk-delete`
 
+3. Audit API (event-ready hybrid read side):
+   - `GET /v1/audit/events?aggregate_type=&aggregate_id=&action=&after_id=&limit=`
+
 All authenticated routes are tenant-scoped by API key.
 
 ---
@@ -383,3 +386,69 @@ If you want deeper integration later:
 - Add query filter DSL (`field op value`) for advanced list views.
 - Add schema validation per collection for stricter contract enforcement.
 - Add NATS publish adapter for event-driven orchestration.
+
+---
+
+## 13. Event-ready hybrid usage with n8n
+
+The service now follows a hybrid model:
+
+1. State is written to record storage.
+2. Immutable audit event is appended.
+3. Outbox event is created for async publishing.
+
+This is done atomically in one transaction for each mutation.
+
+What this means for n8n:
+
+- You can keep doing normal CRUD via collection endpoints.
+- You can read an immutable mutation timeline via `/v1/audit/events`.
+- You get a migration path to push-based event workflows when webhook/NATS publisher adapters are enabled.
+
+### Polling audit trail from n8n
+
+Use this for compliance exports, sync jobs, and "process new changes" workflows.
+
+Endpoint:
+
+`GET /v1/audit/events?after_id=<cursor>&limit=100`
+
+Suggested loop:
+
+1. Keep last `after_id` in n8n static data or external state store.
+2. Call audit endpoint with that cursor.
+3. Process events in returned `items`.
+4. Update cursor to the last event `id` seen.
+5. Repeat on cron.
+
+Example request:
+
+```bash
+curl "http://localhost:8080/v1/audit/events?after_id=0&limit=100" \
+  -H "X-API-Key: n8n-dev-key"
+```
+
+### Mapping event actions to workflow branches
+
+Use IF/Switch node on `action`:
+
+- `record.created` -> onboarding flow
+- `record.updated` -> enrichment/sync flow
+- `record.deleted` -> cleanup/deprovision flow
+
+### Correlation fields for tracing
+
+When calling write endpoints from n8n, set headers:
+
+- `X-Request-Id`
+- `X-Correlation-Id`
+- `X-Causation-Id` (optional)
+- `Idempotency-Key` (bulk endpoints)
+
+These fields are stored in audit events and outbox payloads, making it easy to trace one n8n execution through backend history.
+
+### Retry strategy with hybrid events
+
+- Keep retries enabled on n8n HTTP nodes.
+- Reuse same `Idempotency-Key` for retried bulk requests.
+- Use audit cursor polling to verify which mutations actually committed.

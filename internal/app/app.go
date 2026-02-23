@@ -2,20 +2,18 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 
+	"github.com/atvirokodosprendimai/dbapi/internal/adapters/events"
 	"github.com/atvirokodosprendimai/dbapi/internal/adapters/httpapi"
 	sqliteadapter "github.com/atvirokodosprendimai/dbapi/internal/adapters/sqlite"
+	"github.com/atvirokodosprendimai/dbapi/internal/adapters/sqlite/gormsqlite"
 	"github.com/atvirokodosprendimai/dbapi/internal/core/domain"
 	"github.com/atvirokodosprendimai/dbapi/internal/core/usecase"
 	"github.com/atvirokodosprendimai/dbapi/migrations"
-	gormsqlite "gorm.io/driver/sqlite"
-	"gorm.io/gorm"
-	_ "modernc.org/sqlite"
 )
 
 type Config struct {
@@ -26,48 +24,54 @@ type Config struct {
 	BootstrapKeyName string
 }
 
+type resourceCloser struct {
+	closers []io.Closer
+}
+
+func (r resourceCloser) Close() error {
+	var firstErr error
+	for _, c := range r.closers {
+		if c == nil {
+			continue
+		}
+		if err := c.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func NewServer(ctx context.Context, cfg Config) (*http.Server, io.Closer, error) {
-	sqlDB, err := sql.Open("sqlite", cfg.DBPath)
+	db, err := gormsqlite.Open(cfg.DBPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open sqlite: %w", err)
+		return nil, nil, fmt.Errorf("open cqrs sqlite: %w", err)
 	}
 
-	sqlDB.SetMaxOpenConns(1)
-	sqlDB.SetConnMaxLifetime(0)
-	sqlDB.SetConnMaxIdleTime(0)
+	writeSQLDB, err := db.WriteSQLDB()
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("resolve writer sql db: %w", err)
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-
-	if _, err := sqlDB.ExecContext(ctx, `PRAGMA foreign_keys = ON;`); err != nil {
-		_ = sqlDB.Close()
-		return nil, nil, fmt.Errorf("enable foreign keys: %w", err)
-	}
-	if _, err := sqlDB.ExecContext(ctx, `PRAGMA busy_timeout = 5000;`); err != nil {
-		_ = sqlDB.Close()
-		return nil, nil, fmt.Errorf("set busy timeout: %w", err)
-	}
-	if err := migrations.Up(ctx, sqlDB); err != nil {
-		_ = sqlDB.Close()
+	if err := migrations.Up(ctx, writeSQLDB); err != nil {
+		_ = db.Close()
 		return nil, nil, err
 	}
 
-	gormDB, err := gorm.Open(gormsqlite.Dialector{
-		DriverName: "sqlite",
-		Conn:       sqlDB,
-	}, &gorm.Config{})
-	if err != nil {
-		_ = sqlDB.Close()
-		return nil, nil, fmt.Errorf("open gorm sqlite: %w", err)
-	}
-
-	repo := sqliteadapter.NewRepository(gormDB)
-	apiKeyRepo := sqliteadapter.NewAPIKeyRepository(gormDB)
-	auditRepo := sqliteadapter.NewAuditRepository(gormDB)
+	repo := sqliteadapter.NewRepository(db)
+	recordStore := sqliteadapter.NewRecordEventStore(db)
+	apiKeyRepo := sqliteadapter.NewAPIKeyRepository(db)
+	auditTrailRepo := sqliteadapter.NewAuditTrailRepository(db)
+	outboxRepo := sqliteadapter.NewOutboxRepository(db)
 
 	kvService := usecase.NewKVService(repo)
-	recordService := usecase.NewRecordService(kvService, auditRepo)
+	recordService := usecase.NewRecordService(recordStore)
 	authService := usecase.NewAuthService(apiKeyRepo)
+	auditService := usecase.NewAuditService(auditTrailRepo)
+	dispatcher := usecase.NewOutboxDispatcher(outboxRepo, events.NewLogPublisher(), 2*time.Second, 100)
+	dispatcher.Start(context.Background())
 
 	if cfg.BootstrapAPIKey != "" {
 		tenant := cfg.BootstrapTenant
@@ -87,12 +91,12 @@ func NewServer(ctx context.Context, cfg Config) (*http.Server, io.Closer, error)
 			CreatedAt: time.Now().UTC(),
 		})
 		if err != nil {
-			_ = sqlDB.Close()
+			_ = db.Close()
 			return nil, nil, fmt.Errorf("bootstrap api key: %w", err)
 		}
 	}
 
-	handler := httpapi.NewHandler(kvService, recordService, authService)
+	handler := httpapi.NewHandler(kvService, recordService, authService, auditService)
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
@@ -100,5 +104,5 @@ func NewServer(ctx context.Context, cfg Config) (*http.Server, io.Closer, error)
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	return server, sqlDB, nil
+	return server, resourceCloser{closers: []io.Closer{dispatcher, db}}, nil
 }

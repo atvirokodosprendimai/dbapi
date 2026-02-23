@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atvirokodosprendimai/dbapi/internal/adapters/sqlite/gormsqlite"
 	"github.com/atvirokodosprendimai/dbapi/internal/core/domain"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -24,16 +25,18 @@ func (apiKeyModel) TableName() string {
 }
 
 type APIKeyRepository struct {
-	db *gorm.DB
+	db *gormsqlite.DB
 }
 
-func NewAPIKeyRepository(db *gorm.DB) *APIKeyRepository {
+func NewAPIKeyRepository(db *gormsqlite.DB) *APIKeyRepository {
 	return &APIKeyRepository{db: db}
 }
 
 func (r *APIKeyRepository) FindByTokenHash(ctx context.Context, tokenHash string) (domain.APIKey, error) {
 	var model apiKeyModel
-	err := r.db.WithContext(ctx).Where("token_hash = ?", tokenHash).First(&model).Error
+	err := r.db.ReadTX(ctx, func(tx *gormsqlite.Tx) error {
+		return tx.Where("token_hash = ?", tokenHash).First(&model).Error
+	})
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return domain.APIKey{}, domain.ErrNotFound
@@ -59,12 +62,12 @@ func (r *APIKeyRepository) Upsert(ctx context.Context, key domain.APIKey) error 
 		CreatedAt: key.CreatedAt,
 	}
 
-	err := r.db.WithContext(ctx).
-		Clauses(clause.OnConflict{
+	err := r.db.WriteTX(ctx, func(tx *gormsqlite.Tx) error {
+		return tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "token_hash"}},
 			DoUpdates: clause.AssignmentColumns([]string{"tenant_id", "name", "active"}),
-		}).
-		Create(&model).Error
+		}).Create(&model).Error
+	})
 	if err != nil {
 		return fmt.Errorf("upsert api key: %w", err)
 	}

@@ -54,42 +54,69 @@ func (s *stubRepo) Scan(ctx context.Context, filter domain.ScanFilter) ([]domain
 	return nil, nil
 }
 
-type stubAuditRepo struct{}
+type stubRecordStore struct {
+	getFn    func(ctx context.Context, tenantID, collection, id string) (domain.Record, error)
+	listFn   func(ctx context.Context, tenantID, collection, prefix, after string, limit int) ([]domain.Record, error)
+	upsertFn func(ctx context.Context, rec domain.Record, meta domain.MutationMetadata) (domain.Record, error)
+	deleteFn func(ctx context.Context, tenantID, collection, id string, meta domain.MutationMetadata) (bool, error)
+}
 
-func (s *stubAuditRepo) Log(context.Context, domain.AuditEvent) error { return nil }
+func (s *stubRecordStore) UpsertWithEvents(ctx context.Context, rec domain.Record, meta domain.MutationMetadata) (domain.Record, error) {
+	if s.upsertFn != nil {
+		return s.upsertFn(ctx, rec, meta)
+	}
+	return rec, nil
+}
+
+func (s *stubRecordStore) DeleteWithEvents(ctx context.Context, tenantID, collection, id string, meta domain.MutationMetadata) (bool, error) {
+	if s.deleteFn != nil {
+		return s.deleteFn(ctx, tenantID, collection, id, meta)
+	}
+	return true, nil
+}
+
+func (s *stubRecordStore) Get(ctx context.Context, tenantID, collection, id string) (domain.Record, error) {
+	if s.getFn != nil {
+		return s.getFn(ctx, tenantID, collection, id)
+	}
+	return domain.Record{}, nil
+}
+
+func (s *stubRecordStore) List(ctx context.Context, tenantID, collection, prefix, after string, limit int) ([]domain.Record, error) {
+	if s.listFn != nil {
+		return s.listFn(ctx, tenantID, collection, prefix, after, limit)
+	}
+	return nil, nil
+}
 
 type stubAPIKeyRepo struct{}
 
 func (s *stubAPIKeyRepo) FindByTokenHash(context.Context, string) (domain.APIKey, error) {
-	return domain.APIKey{
-		TokenHash: usecase.HashToken(testAPIKey),
-		TenantID:  "tenant-a",
-		Name:      "test-client",
-		Active:    true,
-		CreatedAt: time.Now().UTC(),
-	}, nil
+	return domain.APIKey{TokenHash: usecase.HashToken(testAPIKey), TenantID: "tenant-a", Name: "test-client", Active: true, CreatedAt: time.Now().UTC()}, nil
 }
-
 func (s *stubAPIKeyRepo) Upsert(context.Context, domain.APIKey) error { return nil }
+
+type stubAuditTrailRepo struct{}
+
+func (s *stubAuditTrailRepo) List(context.Context, domain.AuditFilter) ([]domain.AuditTrailEvent, error) {
+	return nil, nil
+}
 
 func testRouter(repo *stubRepo) http.Handler {
 	kv := usecase.NewKVService(repo)
-	records := usecase.NewRecordService(kv, &stubAuditRepo{})
+	records := usecase.NewRecordService(&stubRecordStore{})
 	auth := usecase.NewAuthService(&stubAPIKeyRepo{})
-	return NewHandler(kv, records, auth).Router()
+	audit := usecase.NewAuditService(&stubAuditTrailRepo{})
+	return NewHandler(kv, records, auth, audit).Router()
 }
 
-func withAuth(req *http.Request) {
-	req.Header.Set("X-API-Key", testAPIKey)
-}
+func withAuth(req *http.Request) { req.Header.Set("X-API-Key", testAPIKey) }
 
 func TestProtectedRouteWithoutAuth(t *testing.T) {
 	h := testRouter(&stubRepo{})
 	req := httptest.NewRequest(http.MethodGet, "/v1/kv", nil)
 	rec := httptest.NewRecorder()
-
 	h.ServeHTTP(rec, req)
-
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
 	}
@@ -100,9 +127,7 @@ func TestUpsertRejectsUnknownFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/v1/kv/user:1", strings.NewReader(`{"category":"users","value":{"name":"a"},"extra":1}`))
 	withAuth(req)
 	rec := httptest.NewRecorder()
-
 	h.ServeHTTP(rec, req)
-
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
@@ -113,9 +138,7 @@ func TestUpsertRejectsTrailingJSON(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/v1/kv/user:1", strings.NewReader(`{"category":"users","value":{"name":"a"}} {}`))
 	withAuth(req)
 	rec := httptest.NewRecorder()
-
 	h.ServeHTTP(rec, req)
-
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
@@ -126,26 +149,18 @@ func TestScanBadLimitReturnsBadRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/kv?limit=bad", nil)
 	withAuth(req)
 	rec := httptest.NewRecorder()
-
 	h.ServeHTTP(rec, req)
-
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
 
 func TestGetNotFoundReturns404(t *testing.T) {
-	h := testRouter(&stubRepo{
-		getFn: func(context.Context, string) (domain.Item, error) {
-			return domain.Item{}, domain.ErrNotFound
-		},
-	})
+	h := testRouter(&stubRepo{getFn: func(context.Context, string) (domain.Item, error) { return domain.Item{}, domain.ErrNotFound }})
 	req := httptest.NewRequest(http.MethodGet, "/v1/kv/user:404", nil)
 	withAuth(req)
 	rec := httptest.NewRecorder()
-
 	h.ServeHTTP(rec, req)
-
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
@@ -154,7 +169,6 @@ func TestGetNotFoundReturns404(t *testing.T) {
 func TestWriteJSONEncodeErrorHandled(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeJSON(rec, http.StatusOK, map[string]any{"bad": func() {}})
-
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", rec.Code)
 	}
@@ -166,11 +180,9 @@ func TestWriteJSONEncodeErrorHandled(t *testing.T) {
 func TestHandleDomainErrorInvalidKey(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handleDomainError(rec, domain.ErrInvalidKey)
-
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
-
 	var payload map[string]string
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -183,7 +195,6 @@ func TestHandleDomainErrorInvalidKey(t *testing.T) {
 func TestHandleDomainErrorUnknown(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handleDomainError(rec, errors.New("boom"))
-
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", rec.Code)
 	}
@@ -193,7 +204,6 @@ func TestOpenAPIEndpoint(t *testing.T) {
 	h := testRouter(&stubRepo{})
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	rec := httptest.NewRecorder()
-
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)

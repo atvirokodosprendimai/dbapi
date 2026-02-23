@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atvirokodosprendimai/dbapi/internal/core/domain"
 	"github.com/atvirokodosprendimai/dbapi/internal/core/usecase"
@@ -28,10 +29,11 @@ type Handler struct {
 	kvService     *usecase.KVService
 	recordService *usecase.RecordService
 	authService   *usecase.AuthService
+	auditService  *usecase.AuditService
 }
 
-func NewHandler(kvService *usecase.KVService, recordService *usecase.RecordService, authService *usecase.AuthService) *Handler {
-	return &Handler{kvService: kvService, recordService: recordService, authService: authService}
+func NewHandler(kvService *usecase.KVService, recordService *usecase.RecordService, authService *usecase.AuthService, auditService *usecase.AuditService) *Handler {
+	return &Handler{kvService: kvService, recordService: recordService, authService: authService, auditService: auditService}
 }
 
 func (h *Handler) Router() http.Handler {
@@ -52,6 +54,7 @@ func (h *Handler) Router() http.Handler {
 		pr.Delete("/v1/collections/{collection}/records/{id}", h.deleteRecord)
 		pr.Post("/v1/collections/{collection}/records:bulk-upsert", h.bulkUpsertRecords)
 		pr.Post("/v1/collections/{collection}/records:bulk-delete", h.bulkDeleteRecords)
+		pr.Get("/v1/audit/events", h.listAuditEvents)
 	})
 
 	return r
@@ -186,7 +189,7 @@ func (h *Handler) upsertRecord(w http.ResponseWriter, r *http.Request) {
 		Collection: collection,
 		ID:         id,
 		Data:       data,
-	}, actor)
+	}, mutationMetaFromRequest(r, actor))
 	if err != nil {
 		handleDomainError(w, err)
 		return
@@ -215,7 +218,7 @@ func (h *Handler) deleteRecord(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantIDFromContext(r.Context())
 	actor := actorFromContext(r.Context())
 
-	deleted, err := h.recordService.Delete(r.Context(), tenantID, collection, id, actor)
+	deleted, err := h.recordService.Delete(r.Context(), tenantID, collection, id, mutationMetaFromRequest(r, actor))
 	if err != nil {
 		handleDomainError(w, err)
 		return
@@ -277,7 +280,7 @@ func (h *Handler) bulkUpsertRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := h.recordService.BulkUpsert(r.Context(), tenantID, collection, req.Items, actor)
+	records, err := h.recordService.BulkUpsert(r.Context(), tenantID, collection, req.Items, mutationMetaFromRequest(r, actor))
 	if err != nil {
 		handleDomainError(w, err)
 		return
@@ -315,7 +318,7 @@ func (h *Handler) bulkDeleteRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	count, err := h.recordService.BulkDelete(r.Context(), tenantID, collection, req.IDs, actor)
+	count, err := h.recordService.BulkDelete(r.Context(), tenantID, collection, req.IDs, mutationMetaFromRequest(r, actor))
 	if err != nil {
 		handleDomainError(w, err)
 		return
@@ -332,6 +335,39 @@ func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) openapi(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, openapiSpec())
+}
+
+func (h *Handler) listAuditEvents(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantIDFromContext(r.Context())
+	limit, ok := parseLimit(w, r)
+	if !ok {
+		return
+	}
+
+	afterID := int64(0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("after_id")); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "after_id must be integer")
+			return
+		}
+		afterID = v
+	}
+
+	events, err := h.auditService.List(r.Context(), domain.AuditFilter{
+		TenantID:      tenantID,
+		AggregateType: r.URL.Query().Get("aggregate_type"),
+		AggregateID:   r.URL.Query().Get("aggregate_id"),
+		Action:        r.URL.Query().Get("action"),
+		AfterID:       afterID,
+		Limit:         limit,
+	})
+	if err != nil {
+		handleDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"items": events})
 }
 
 func (h *Handler) requireAPIKey(next http.Handler) http.Handler {
@@ -447,6 +483,31 @@ func actorFromContext(ctx context.Context) string {
 	return actor
 }
 
+func mutationMetaFromRequest(r *http.Request, actor string) domain.MutationMetadata {
+	requestID := strings.TrimSpace(r.Header.Get("X-Request-Id"))
+	if requestID == "" {
+		requestID = strings.TrimSpace(r.Header.Get("X-Request-ID"))
+	}
+	correlationID := strings.TrimSpace(r.Header.Get("X-Correlation-Id"))
+	if correlationID == "" {
+		correlationID = strings.TrimSpace(r.Header.Get("X-Correlation-ID"))
+	}
+	causationID := strings.TrimSpace(r.Header.Get("X-Causation-Id"))
+	if causationID == "" {
+		causationID = strings.TrimSpace(r.Header.Get("X-Causation-ID"))
+	}
+
+	return domain.MutationMetadata{
+		Actor:          actor,
+		Source:         "api",
+		RequestID:      requestID,
+		CorrelationID:  correlationID,
+		CausationID:    causationID,
+		IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key")),
+		OccurredAt:     time.Now().UTC(),
+	}
+}
+
 func idempotencyKey(tenantID, collection, op, token string) string {
 	return "idempotency/" + tenantID + "/" + collection + "/" + op + "/" + token
 }
@@ -508,6 +569,9 @@ func openapiSpec() map[string]any {
 			},
 			"/v1/collections/{collection}/records:bulk-delete": map[string]any{
 				"post": map[string]any{"summary": "Bulk delete records"},
+			},
+			"/v1/audit/events": map[string]any{
+				"get": map[string]any{"summary": "List audit events"},
 			},
 		},
 	}
