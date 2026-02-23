@@ -137,6 +137,10 @@ func TestOutboxDispatcherDispatchBatchSuccess(t *testing.T) {
 	if len(repo.failed) != 0 || len(repo.dead) != 0 {
 		t.Fatalf("expected no failures/dead marks, got failed=%d dead=%d", len(repo.failed), len(repo.dead))
 	}
+	m := d.Metrics()
+	if m.DispatchSuccessTotal != 1 || m.DispatchFailureTotal != 0 || m.DispatchDeadTotal != 0 {
+		t.Fatalf("unexpected metrics: %+v", m)
+	}
 }
 
 func TestOutboxDispatcherPublishFailureMarksFailedWithRetry(t *testing.T) {
@@ -173,6 +177,10 @@ func TestOutboxDispatcherPublishFailureMarksFailedWithRetry(t *testing.T) {
 	if len(repo.dead) != 0 {
 		t.Fatalf("expected no dead marks, got %v", repo.dead)
 	}
+	m := d.Metrics()
+	if m.DispatchFailureTotal != 1 || m.DispatchSuccessTotal != 0 {
+		t.Fatalf("unexpected metrics: %+v", m)
+	}
 }
 
 func TestOutboxDispatcherRetryBudgetMovesToDead(t *testing.T) {
@@ -202,6 +210,10 @@ func TestOutboxDispatcherRetryBudgetMovesToDead(t *testing.T) {
 	}
 	if len(repo.failed) != 0 {
 		t.Fatalf("expected no failed marks when dead-lettered, got %d", len(repo.failed))
+	}
+	m := d.Metrics()
+	if m.DispatchFailureTotal != 1 || m.DispatchDeadTotal != 1 {
+		t.Fatalf("unexpected metrics: %+v", m)
 	}
 }
 
@@ -236,5 +248,9 @@ func TestOutboxDispatcherRestartResumeDispatchesRemainingPending(t *testing.T) {
 	}
 	if repo.dispatched[1] != 4 {
 		t.Fatalf("expected resumed dispatch of id=4, got %d", repo.dispatched[1])
+	}
+	m := d2.Metrics()
+	if m.DispatchSuccessTotal != 1 {
+		t.Fatalf("expected second dispatcher success metric=1, got %+v", m)
 	}
 }

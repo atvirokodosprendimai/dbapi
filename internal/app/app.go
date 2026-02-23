@@ -72,6 +72,11 @@ func NewServer(ctx context.Context, cfg Config) (*http.Server, io.Closer, error)
 	auditService := usecase.NewAuditService(auditTrailRepo)
 	dispatcher := usecase.NewOutboxDispatcher(outboxRepo, events.NewLogPublisher(), 2*time.Second, 100)
 	dispatcher.Start(context.Background())
+	readinessCheck := func(ctx context.Context) error {
+		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		return writeSQLDB.PingContext(checkCtx)
+	}
 
 	if cfg.BootstrapAPIKey != "" {
 		tenant := cfg.BootstrapTenant
@@ -98,7 +103,21 @@ func NewServer(ctx context.Context, cfg Config) (*http.Server, io.Closer, error)
 		}
 	}
 
-	handler := httpapi.NewHandler(kvService, recordService, authService, auditService)
+	handler := httpapi.NewHandler(
+		kvService,
+		recordService,
+		authService,
+		auditService,
+		httpapi.WithReadinessCheck(readinessCheck),
+		httpapi.WithExtraMetrics(func() map[string]int64 {
+			m := dispatcher.Metrics()
+			return map[string]int64{
+				"outbox_dispatch_success_total": m.DispatchSuccessTotal,
+				"outbox_dispatch_failure_total": m.DispatchFailureTotal,
+				"outbox_dispatch_dead_total":    m.DispatchDeadTotal,
+			}
+		}),
+	)
 
 	server := &http.Server{
 		Addr:              cfg.Addr,

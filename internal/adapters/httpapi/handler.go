@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/atvirokodosprendimai/dbapi/internal/core/domain"
@@ -30,19 +31,43 @@ type Handler struct {
 	recordService *usecase.RecordService
 	authService   *usecase.AuthService
 	auditService  *usecase.AuditService
+	readinessFn   func(context.Context) error
+	extraMetrics  func() map[string]int64
+	metrics       handlerMetrics
 }
 
-func NewHandler(kvService *usecase.KVService, recordService *usecase.RecordService, authService *usecase.AuthService, auditService *usecase.AuditService) *Handler {
-	return &Handler{kvService: kvService, recordService: recordService, authService: authService, auditService: auditService}
+type Option func(*Handler)
+
+func WithReadinessCheck(fn func(context.Context) error) Option {
+	return func(h *Handler) {
+		h.readinessFn = fn
+	}
+}
+
+func WithExtraMetrics(fn func() map[string]int64) Option {
+	return func(h *Handler) {
+		h.extraMetrics = fn
+	}
+}
+
+func NewHandler(kvService *usecase.KVService, recordService *usecase.RecordService, authService *usecase.AuthService, auditService *usecase.AuditService, opts ...Option) *Handler {
+	h := &Handler{kvService: kvService, recordService: recordService, authService: authService, auditService: auditService}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 func (h *Handler) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/healthz", h.healthz)
+	r.Get("/readyz", h.readyz)
+	r.Get("/metricsz", h.metricsz)
 	r.Get("/openapi.json", h.openapi)
 
 	r.Group(func(pr chi.Router) {
 		pr.Use(h.requireAPIKey)
+		pr.Use(h.requestLogger)
 		pr.Get("/v1/kv", h.scan)
 		pr.Put("/v1/kv/{key}", h.upsert)
 		pr.Get("/v1/kv/{key}", h.get)
@@ -340,6 +365,30 @@ func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
+	if h.readinessFn != nil {
+		if err := h.readinessFn(r.Context()); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "not ready")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *Handler) metricsz(w http.ResponseWriter, _ *http.Request) {
+	body := map[string]int64{
+		"http_requests_total":           h.metrics.httpRequestsTotal.Load(),
+		"http_request_latency_ms_total": h.metrics.httpRequestLatencyMsTotal.Load(),
+		"record_write_total":            h.metrics.recordWriteTotal.Load(),
+	}
+	if h.extraMetrics != nil {
+		for k, v := range h.extraMetrics() {
+			body[k] = v
+		}
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
 func (h *Handler) openapi(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, openapiSpec())
 }
@@ -514,6 +563,64 @@ func mutationMetaFromRequest(r *http.Request, actor string) domain.MutationMetad
 		CausationID:    causationID,
 		IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key")),
 		OccurredAt:     time.Now().UTC(),
+	}
+}
+
+type handlerMetrics struct {
+	httpRequestsTotal         atomic.Int64
+	httpRequestLatencyMsTotal atomic.Int64
+	recordWriteTotal          atomic.Int64
+}
+
+func (h *Handler) requestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		ww := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(ww, r)
+
+		durationMs := time.Since(start).Milliseconds()
+		route := routePattern(r)
+		requestID := strings.TrimSpace(r.Header.Get("X-Request-Id"))
+		if requestID == "" {
+			requestID = strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		}
+		tenantID := tenantIDFromContext(r.Context())
+
+		h.metrics.httpRequestsTotal.Add(1)
+		h.metrics.httpRequestLatencyMsTotal.Add(durationMs)
+		if isWriteRoute(r.Method, route) {
+			h.metrics.recordWriteTotal.Add(1)
+		}
+
+		log.Printf("request method=%s route=%s status=%d duration_ms=%d request_id=%s tenant_id=%s", r.Method, route, ww.status, durationMs, requestID, tenantID)
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func routePattern(r *http.Request) string {
+	if ctx := chi.RouteContext(r.Context()); ctx != nil {
+		if p := strings.TrimSpace(ctx.RoutePattern()); p != "" {
+			return p
+		}
+	}
+	return r.URL.Path
+}
+
+func isWriteRoute(method, route string) bool {
+	switch method {
+	case http.MethodPut, http.MethodPost, http.MethodDelete:
+		return strings.Contains(route, "/records") || strings.HasPrefix(route, "/v1/kv/")
+	default:
+		return false
 	}
 }
 

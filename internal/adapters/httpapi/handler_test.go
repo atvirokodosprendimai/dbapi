@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -103,11 +105,15 @@ func (s *stubAuditTrailRepo) List(context.Context, domain.AuditFilter) ([]domain
 }
 
 func testRouter(repo *stubRepo) http.Handler {
+	return testRouterWithOptions(repo)
+}
+
+func testRouterWithOptions(repo *stubRepo, opts ...Option) http.Handler {
 	kv := usecase.NewKVService(repo)
 	records := usecase.NewRecordService(&stubRecordStore{})
 	auth := usecase.NewAuthService(&stubAPIKeyRepo{})
 	audit := usecase.NewAuditService(&stubAuditTrailRepo{})
-	return NewHandler(kv, records, auth, audit).Router()
+	return NewHandler(kv, records, auth, audit, opts...).Router()
 }
 
 func withAuth(req *http.Request) { req.Header.Set("X-API-Key", testAPIKey) }
@@ -218,5 +224,99 @@ func TestOpenAPIEndpoint(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestReadinessEndpoint(t *testing.T) {
+	h := testRouterWithOptions(&stubRepo{}, WithReadinessCheck(func(context.Context) error { return nil }))
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestReadinessEndpointFailure(t *testing.T) {
+	h := testRouterWithOptions(&stubRepo{}, WithReadinessCheck(func(context.Context) error { return errors.New("db down") }))
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+}
+
+func TestMetricsEndpointIncludesRequestAndWriteCounters(t *testing.T) {
+	h := testRouter(&stubRepo{})
+
+	writeReq := httptest.NewRequest(http.MethodPut, "/v1/kv/user:1", strings.NewReader(`{"category":"users","value":{"name":"a"}}`))
+	withAuth(writeReq)
+	writeRec := httptest.NewRecorder()
+	h.ServeHTTP(writeRec, writeReq)
+	if writeRec.Code != http.StatusOK {
+		t.Fatalf("expected write 200, got %d", writeRec.Code)
+	}
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metricsz", nil)
+	metricsRec := httptest.NewRecorder()
+	h.ServeHTTP(metricsRec, metricsReq)
+	if metricsRec.Code != http.StatusOK {
+		t.Fatalf("expected metrics 200, got %d", metricsRec.Code)
+	}
+
+	var body map[string]int64
+	if err := json.Unmarshal(metricsRec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode metrics: %v", err)
+	}
+	if body["http_requests_total"] < 1 {
+		t.Fatalf("expected http_requests_total >= 1, got %d", body["http_requests_total"])
+	}
+	if body["record_write_total"] < 1 {
+		t.Fatalf("expected record_write_total >= 1, got %d", body["record_write_total"])
+	}
+}
+
+func TestRequestLogContainsContractFieldsAndRedactsSecrets(t *testing.T) {
+	var logs bytes.Buffer
+	orig := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(orig) })
+
+	h := testRouter(&stubRepo{})
+	req := httptest.NewRequest(http.MethodGet, "/v1/kv", nil)
+	req.Header.Set("X-API-Key", "super-secret-token")
+	req.Header.Set("X-Request-Id", "req-123")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	line := logs.String()
+	for _, want := range []string{"method=GET", "route=/v1/kv", "status=200", "duration_ms=", "request_id=req-123", "tenant_id=tenant-a"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("missing log field %q in %q", want, line)
+		}
+	}
+	if strings.Contains(line, "super-secret-token") {
+		t.Fatalf("log leaked API key: %q", line)
+	}
+}
+
+func TestIdempotencyKeyIsScopedByTenantCollectionAndOperation(t *testing.T) {
+	a := idempotencyKey("tenant-a", "users", "bulk-upsert", "k1")
+	b := idempotencyKey("tenant-b", "users", "bulk-upsert", "k1")
+	c := idempotencyKey("tenant-a", "users", "bulk-delete", "k1")
+	d := idempotencyKey("tenant-a", "orders", "bulk-upsert", "k1")
+
+	if a == b {
+		t.Fatalf("expected tenant scope separation")
+	}
+	if a == c {
+		t.Fatalf("expected operation scope separation")
+	}
+	if a == d {
+		t.Fatalf("expected collection scope separation")
 	}
 }

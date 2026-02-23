@@ -54,20 +54,20 @@ Legend:
 ### Security Hardening (`specs/phase3/security-hardening.md`)
 
 - [x] Strict decode and validation behavior in `internal/adapters/httpapi/handler_test.go`
-- [ ] Add explicit log redaction assertions for credentials/secrets
-- [ ] Add idempotency scope tests across tenant and endpoint boundaries
+- [x] Explicit log redaction assertions for credentials/secrets in `internal/adapters/httpapi/handler_test.go`
+- [x] Idempotency scope tests across tenant and endpoint boundaries in `internal/adapters/httpapi/handler_test.go`
 
 ### Observability and SLO (`specs/phase3/observability-slo.md`)
 
-- [ ] Add structured logging contract tests for correlation fields
-- [ ] Add readiness/health integration tests for dependency failure modes
-- [ ] Add metrics contract tests for write and dispatcher critical paths
+- [x] Structured logging contract tests for correlation fields in `internal/adapters/httpapi/handler_test.go`
+- [x] Readiness/health integration tests for dependency failure modes in `internal/adapters/httpapi/handler_test.go`
+- [x] Metrics contract tests for write and dispatcher critical paths in `internal/adapters/httpapi/handler_test.go` and `internal/core/usecase/outbox_dispatcher_test.go`
 
 ### Release Governance (`specs/phase3/release-governance.md`)
 
 - [x] Workflow policy encoded in `.github/workflows/docker-build.yml`
-- [ ] Add workflow-level automated tests for tag-classification branches
-- [ ] Add release-note checklist artifact with rollback/migration requirements
+- [x] Workflow-level automated tests for tag-classification logic in `internal/ci/releasepolicy/policy_test.go`
+- [x] Release-note checklist artifact with rollback/migration requirements in `docs/release-checklist.md`
 
 ## Baseline verification
 

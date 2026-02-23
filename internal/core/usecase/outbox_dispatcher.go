@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/atvirokodosprendimai/dbapi/internal/core/domain"
@@ -22,6 +23,16 @@ type OutboxDispatcher struct {
 	mu     sync.Mutex
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	dispatchSuccessTotal atomic.Int64
+	dispatchFailureTotal atomic.Int64
+	dispatchDeadTotal    atomic.Int64
+}
+
+type OutboxDispatcherMetrics struct {
+	DispatchSuccessTotal int64
+	DispatchFailureTotal int64
+	DispatchDeadTotal    int64
 }
 
 func NewOutboxDispatcher(repo ports.OutboxRepository, publisher ports.EventPublisher, interval time.Duration, batchSize int) *OutboxDispatcher {
@@ -84,18 +95,25 @@ func (d *OutboxDispatcher) dispatchBatch(ctx context.Context) error {
 	for _, event := range events {
 		var envelope domain.EventEnvelope
 		if err := json.Unmarshal(event.PayloadJSON, &envelope); err != nil {
-			_ = d.markFailure(ctx, event, fmt.Sprintf("decode payload: %v", err))
+			if markErr := d.markFailure(ctx, event, fmt.Sprintf("decode payload: %v", err)); markErr != nil {
+				return markErr
+			}
+			d.dispatchFailureTotal.Add(1)
 			continue
 		}
 
 		if err := d.publisher.Publish(ctx, event.Topic, envelope); err != nil {
-			_ = d.markFailure(ctx, event, err.Error())
+			if markErr := d.markFailure(ctx, event, err.Error()); markErr != nil {
+				return markErr
+			}
+			d.dispatchFailureTotal.Add(1)
 			continue
 		}
 
 		if err := d.repo.MarkDispatched(ctx, event.ID); err != nil {
 			return err
 		}
+		d.dispatchSuccessTotal.Add(1)
 	}
 
 	return nil
@@ -104,10 +122,22 @@ func (d *OutboxDispatcher) dispatchBatch(ctx context.Context) error {
 func (d *OutboxDispatcher) markFailure(ctx context.Context, event domain.OutboxEvent, errMsg string) error {
 	attempts := event.Attempts + 1
 	if attempts >= d.maxRetry {
-		return d.repo.MarkDead(ctx, event.ID, attempts, errMsg)
+		if err := d.repo.MarkDead(ctx, event.ID, attempts, errMsg); err != nil {
+			return err
+		}
+		d.dispatchDeadTotal.Add(1)
+		return nil
 	}
 	next := time.Now().UTC().Add(backoffDuration(attempts)).Format(time.RFC3339Nano)
 	return d.repo.MarkFailed(ctx, event.ID, attempts, next, errMsg)
+}
+
+func (d *OutboxDispatcher) Metrics() OutboxDispatcherMetrics {
+	return OutboxDispatcherMetrics{
+		DispatchSuccessTotal: d.dispatchSuccessTotal.Load(),
+		DispatchFailureTotal: d.dispatchFailureTotal.Load(),
+		DispatchDeadTotal:    d.dispatchDeadTotal.Load(),
+	}
 }
 
 func backoffDuration(attempt int) time.Duration {
