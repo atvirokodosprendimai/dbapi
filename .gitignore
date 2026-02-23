@@ -6,3 +6,5 @@ dbapi.sqlite-wal
 coverage.out
 
 .DS_Store
+
+.env

@@ -1,0 +1,26 @@
+services:
+  dbapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dbapi:local
+    container_name: dbapi
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DBAPI_BOOTSTRAP_API_KEY: ${DBAPI_BOOTSTRAP_API_KEY}
+      DBAPI_BOOTSTRAP_TENANT: ${DBAPI_BOOTSTRAP_TENANT}
+      DBAPI_BOOTSTRAP_KEY_NAME: ${DBAPI_BOOTSTRAP_KEY_NAME}
+    command:
+      - --addr
+      - :8080
+      - --db-path
+      - ${DBAPI_DB_PATH}
+    ports:
+      - ${DBAPI_PORT}:8080
+    volumes:
+      - dbapi_data:/data
+
+volumes:
+  dbapi_data:
