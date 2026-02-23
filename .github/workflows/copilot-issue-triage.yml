@@ -22,7 +22,7 @@ jobs:
       - name: Add needs-triage and ask Copilot for spec PR
         uses: actions/github-script@v7
         env:
-          COPILOT_ASSIGNEE: ${{ vars.COPILOT_ASSIGNEE || 'copilot-swe-agent' }}
+          COPILOT_ASSIGNEE: ${{ vars.COPILOT_ASSIGNEE || 'Copilot' }}
         with:
           script: |
             const marker = '<!-- copilot-issue-triage -->';
@@ -107,7 +107,7 @@ jobs:
       - name: Promote linked issues to implementation with Copilot
         uses: actions/github-script@v7
         env:
-          COPILOT_ASSIGNEE: ${{ vars.COPILOT_ASSIGNEE || 'copilot-swe-agent' }}
+          COPILOT_ASSIGNEE: ${{ vars.COPILOT_ASSIGNEE || 'Copilot' }}
         with:
           script: |
             const { owner, repo } = context.repo;
