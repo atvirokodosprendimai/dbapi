@@ -463,3 +463,298 @@ These fields are stored in audit events and outbox payloads, making it easy to t
 - Keep retries enabled on n8n HTTP nodes.
 - Reuse same `Idempotency-Key` for retried bulk requests.
 - Use audit cursor polling to verify which mutations actually committed.
+
+---
+
+## 14. Mermaid diagrams for integrators
+
+Use these as copy/paste blueprints in design docs, runbooks, and onboarding notes.
+
+### 14.1 End-to-end integration map
+
+```mermaid
+flowchart LR
+    A[External system\nWebhook/CRM/ERP] --> B[n8n workflow]
+    B -->|PUT/POST/GET| C[dbapi HTTP API]
+    C --> D[(SQLite state: records/KV)]
+    C --> E[(Immutable audit_events)]
+    C --> F[(outbox_events)]
+    F --> G[Outbox dispatcher]
+    G --> H[Event publisher\n(log now, NATS/webhook later)]
+    E --> I[n8n polling flow\nGET /v1/audit/events]
+```
+
+### 14.2 Atomic write transaction (UML sequence)
+
+```mermaid
+sequenceDiagram
+    participant N as n8n
+    participant API as dbapi
+    participant TX as SQLite transaction
+    participant S as State table
+    participant A as audit_events
+    participant O as outbox_events
+
+    N->>API: PUT /v1/collections/{c}/records/{id}
+    API->>TX: BEGIN
+    TX->>S: Upsert/Delete record state
+    TX->>A: Insert immutable audit row
+    TX->>O: Insert outbox row
+    alt all side effects succeed
+        TX-->>API: COMMIT
+        API-->>N: 200 OK
+    else any step fails
+        TX-->>API: ROLLBACK
+        API-->>N: 5xx/4xx error
+    end
+```
+
+### 14.3 Bulk idempotency behavior
+
+```mermaid
+sequenceDiagram
+    participant N as n8n
+    participant API as dbapi
+    participant KV as idempotency cache
+    participant W as bulk write logic
+
+    N->>API: POST bulk-upsert + Idempotency-Key
+    API->>KV: Lookup cache by tenant+collection+op+token
+    alt cache hit
+        KV-->>API: cached payload
+        API-->>N: 200 cached response
+    else cache miss
+        API->>W: execute bulk mutation
+        W-->>API: mutation result
+        API->>KV: store response payload
+        API-->>N: 200 fresh response
+    end
+```
+
+### 14.4 Outbox dispatch lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending
+    pending --> dispatched: publish success
+    pending --> pending: transient failure\n(attempts++, next_attempt_at)
+    pending --> dead: retry budget exhausted
+    dispatched --> [*]
+    dead --> [*]
+```
+
+### 14.5 Audit polling cursor loop for n8n
+
+```mermaid
+flowchart TD
+    A[Load cursor after_id\nfrom static data/store] --> B[GET /v1/audit/events?after_id=&limit=100]
+    B --> C{items empty?}
+    C -->|yes| D[Stop this run]
+    C -->|no| E[Process each event\nSwitch by action]
+    E --> F[Set cursor = last item id]
+    F --> B
+```
+
+### 14.6 Recommended n8n error-routing model
+
+```mermaid
+flowchart LR
+    A[HTTP node response] --> B{status code}
+    B -->|2xx| C[Continue pipeline]
+    B -->|400| D[Validation branch\nmanual review/dead-letter]
+    B -->|401| E[Credential alert\nstop flow]
+    B -->|404| F[Conditional branch\nhandle missing entity]
+    B -->|5xx| G[Retry with backoff\nsame Idempotency-Key]
+```
+
+### 14.7 Operational endpoints at runtime
+
+```mermaid
+flowchart LR
+    A[n8n / monitor] -->|GET /healthz| H[process alive]
+    A -->|GET /readyz| R[db readiness check]
+    A -->|GET /metricsz| M[JSON counters\nrequests, latency, writes, outbox]
+```
+
+### 14.8 Integrator quick-reference matrix
+
+| Scenario | Endpoint | Required headers | Cursor/Idempotency |
+|---|---|---|---|
+| Upsert one record | `PUT /v1/collections/{c}/records/{id}` | `X-API-Key`, `Content-Type` | Deterministic `id` |
+| Bulk upsert | `POST /v1/collections/{c}/records:bulk-upsert` | `X-API-Key`, `Content-Type`, `Idempotency-Key` | Stable idempotency token |
+| Bulk delete | `POST /v1/collections/{c}/records:bulk-delete` | `X-API-Key`, `Content-Type`, `Idempotency-Key` | Stable idempotency token |
+| Read change stream | `GET /v1/audit/events` | `X-API-Key` | `after_id` cursor |
+| Liveness probe | `GET /healthz` | none | n/a |
+| Readiness probe | `GET /readyz` | none | n/a |
+| Runtime counters | `GET /metricsz` | none | n/a |
+
+---
+
+## 15. Import-ready n8n workflow JSON examples
+
+These are minimal templates you can paste into n8n import, then adjust credentials/URLs.
+
+### 15.1 Webhook -> Normalize -> Upsert Contact
+
+```json
+{
+  "name": "dbapi Inbound Contact Upsert",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "dbapi-contact",
+        "responseMode": "onReceived"
+      },
+      "id": "Webhook_1",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [300, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const b = $json.body || $json;\nconst email = (b.email || '').toLowerCase().trim();\nconst id = b.contact_id || ('contact_' + Buffer.from(email).toString('hex').slice(0, 24));\nreturn [{\n  json: {\n    id,\n    data: {\n      first_name: b.first_name || '',\n      last_name: b.last_name || '',\n      email,\n      phone: b.phone || '',\n      status: b.status || 'lead',\n      meta: { source: 'n8n-webhook' }\n    }\n  }\n}];"
+      },
+      "id": "Code_1",
+      "name": "Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 300]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{'http://localhost:8080/v1/collections/contacts/records/' + $json.id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-API-Key", "value": "n8n-dev-key" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Request-Id", "value": "={{$execution.id}}" },
+            { "name": "X-Correlation-Id", "value": "={{$workflow.id + '-' + $execution.id}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json.data}}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "HTTP_1",
+      "name": "Upsert Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [860, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Normalize", "type": "main", "index": 0 }]] },
+    "Normalize": { "main": [[{ "node": "Upsert Contact", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": {}
+}
+```
+
+### 15.2 Cron -> Poll Audit Cursor -> Branch by Action
+
+```json
+{
+  "name": "dbapi Audit Poller",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "Cron_1",
+      "name": "Cron",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [300, 520]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const s = this.getWorkflowStaticData('global');\nconst after = s.after_id || 0;\nreturn [{ json: { after_id: after } }];"
+      },
+      "id": "Code_2",
+      "name": "Load Cursor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 520]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{'http://localhost:8080/v1/audit/events?after_id=' + $json.after_id + '&limit=100'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-API-Key", "value": "n8n-dev-key" }
+          ]
+        }
+      },
+      "id": "HTTP_2",
+      "name": "Fetch Audit Events",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [850, 520]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const body = $json;\nconst items = body.items || [];\nconst out = [];\nfor (const ev of items) out.push({ json: ev });\nif (items.length > 0) {\n  const s = this.getWorkflowStaticData('global');\n  s.after_id = items[items.length - 1].id;\n}\nreturn out;"
+      },
+      "id": "Code_3",
+      "name": "Explode + Save Cursor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 520]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "options": { "caseSensitive": true }, "conditions": [{ "leftValue": "={{$json.action}}", "rightValue": "record.created", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "options": { "caseSensitive": true }, "conditions": [{ "leftValue": "={{$json.action}}", "rightValue": "record.updated", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "options": { "caseSensitive": true }, "conditions": [{ "leftValue": "={{$json.action}}", "rightValue": "record.deleted", "operator": { "type": "string", "operation": "equals" } }] } }
+          ]
+        }
+      },
+      "id": "Switch_1",
+      "name": "Branch by Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1380, 520]
+    }
+  ],
+  "connections": {
+    "Cron": { "main": [[{ "node": "Load Cursor", "type": "main", "index": 0 }]] },
+    "Load Cursor": { "main": [[{ "node": "Fetch Audit Events", "type": "main", "index": 0 }]] },
+    "Fetch Audit Events": { "main": [[{ "node": "Explode + Save Cursor", "type": "main", "index": 0 }]] },
+    "Explode + Save Cursor": { "main": [[{ "node": "Branch by Action", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": {}
+}
+```
+
+Notes:
+
+- Keep the same `Idempotency-Key` when retrying bulk endpoints.
+- Store API keys in n8n credentials, not inline node fields, for production.
+- If your n8n version differs, import then re-select node options in UI (field names can vary slightly by node version).
