@@ -23,11 +23,14 @@ jobs:
     steps:
       - name: Add needs-triage and ask Copilot for spec PR
         uses: actions/github-script@v7
+        env:
+          COPILOT_ASSIGNEE: ${{ vars.COPILOT_ASSIGNEE || 'copilot-swe-agent' }}
         with:
           script: |
             const marker = '<!-- copilot-issue-triage -->';
             const { owner, repo } = context.repo;
             const issue_number = context.payload.issue.number;
+            const desiredAssignee = process.env.COPILOT_ASSIGNEE;
 
             const allLabels = await github.paginate(github.rest.issues.listLabelsForRepo, {
               owner,
@@ -53,6 +56,20 @@ jobs:
                 issue_number,
                 labels: ['needs-triage'],
               });
+            }
+
+            const currentAssignees = (context.payload.issue.assignees || []).map((a) => a.login);
+            if (desiredAssignee && !currentAssignees.includes(desiredAssignee)) {
+              try {
+                await github.rest.issues.addAssignees({
+                  owner,
+                  repo,
+                  issue_number,
+                  assignees: [desiredAssignee],
+                });
+              } catch (err) {
+                core.warning(`Unable to assign ${desiredAssignee}: ${err.message}`);
+              }
             }
 
             const comments = await github.paginate(github.rest.issues.listComments, {
