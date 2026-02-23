@@ -1,0 +1,8 @@
+dbapi.sqlite
+dbapi.sqlite-shm
+dbapi.sqlite-wal
+
+*.test
+coverage.out
+
+.DS_Store
