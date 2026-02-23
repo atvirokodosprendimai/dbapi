@@ -474,14 +474,14 @@ Use these as copy/paste blueprints in design docs, runbooks, and onboarding note
 
 ```mermaid
 flowchart LR
-    A[External system\nWebhook/CRM/ERP] --> B[n8n workflow]
+    A["External system<br/>Webhook, CRM, ERP"] --> B[n8n workflow]
     B -->|PUT/POST/GET| C[dbapi HTTP API]
     C --> D[(SQLite state: records/KV)]
     C --> E[(Immutable audit_events)]
     C --> F[(outbox_events)]
     F --> G[Outbox dispatcher]
-    G --> H[Event publisher\n(log now, NATS/webhook later)]
-    E --> I[n8n polling flow\nGET /v1/audit/events]
+    G --> H["Event publisher<br/>log now, NATS or webhook later"]
+    E --> I["n8n polling flow<br/>GET /v1/audit/events"]
 ```
 
 ### 14.2 Atomic write transaction (UML sequence)
@@ -537,7 +537,7 @@ sequenceDiagram
 stateDiagram-v2
     [*] --> pending
     pending --> dispatched: publish success
-    pending --> pending: transient failure\n(attempts++, next_attempt_at)
+    pending --> pending: transient failure; attempts++, next_attempt_at
     pending --> dead: retry budget exhausted
     dispatched --> [*]
     dead --> [*]
@@ -547,10 +547,10 @@ stateDiagram-v2
 
 ```mermaid
 flowchart TD
-    A[Load cursor after_id\nfrom static data/store] --> B[GET /v1/audit/events?after_id=&limit=100]
+    A["Load cursor after_id<br/>from static data or store"] --> B[GET /v1/audit/events?after_id=&limit=100]
     B --> C{items empty?}
     C -->|yes| D[Stop this run]
-    C -->|no| E[Process each event\nSwitch by action]
+    C -->|no| E["Process each event<br/>Switch by action"]
     E --> F[Set cursor = last item id]
     F --> B
 ```
@@ -561,10 +561,10 @@ flowchart TD
 flowchart LR
     A[HTTP node response] --> B{status code}
     B -->|2xx| C[Continue pipeline]
-    B -->|400| D[Validation branch\nmanual review/dead-letter]
-    B -->|401| E[Credential alert\nstop flow]
-    B -->|404| F[Conditional branch\nhandle missing entity]
-    B -->|5xx| G[Retry with backoff\nsame Idempotency-Key]
+    B -->|400| D["Validation branch<br/>manual review or dead-letter"]
+    B -->|401| E["Credential alert<br/>stop flow"]
+    B -->|404| F["Conditional branch<br/>handle missing entity"]
+    B -->|5xx| G["Retry with backoff<br/>same Idempotency-Key"]
 ```
 
 ### 14.7 Operational endpoints at runtime
@@ -573,7 +573,7 @@ flowchart LR
 flowchart LR
     A[n8n / monitor] -->|GET /healthz| H[process alive]
     A -->|GET /readyz| R[db readiness check]
-    A -->|GET /metricsz| M[JSON counters\nrequests, latency, writes, outbox]
+    A -->|GET /metricsz| M["JSON counters<br/>requests, latency, writes, outbox"]
 ```
 
 ### 14.8 Integrator quick-reference matrix
