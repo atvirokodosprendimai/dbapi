@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/atvirokodosprendimai/dbapi/internal/adapters/sqlite/gormsqlite"
@@ -77,5 +78,76 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 	if err := migrations.Up(ctx, wdb); err != nil {
 		t.Fatalf("second migrate: %v", err)
+	}
+}
+
+func TestAuditEventTriggersEnforceImmutability(t *testing.T) {
+	ctx := context.Background()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "audit-immutable.sqlite")
+	db, err := gormsqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	wdb, err := db.WriteSQLDB()
+	if err != nil {
+		t.Fatalf("writer sql db: %v", err)
+	}
+
+	if err := migrations.Up(ctx, wdb); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	store := NewRecordEventStore(db)
+	_, err = store.UpsertWithEvents(ctx, domain.Record{
+		TenantID:   "tenant-a",
+		Collection: "users",
+		ID:         "u1",
+		Data:       json.RawMessage(`{"name":"A"}`),
+	}, domain.MutationMetadata{
+		Actor:          "tester",
+		Source:         "test",
+		RequestID:      "req-1",
+		CorrelationID:  "corr-1",
+		CausationID:    "cause-1",
+		IdempotencyKey: "idem-1",
+	})
+	if err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+
+	_, err = wdb.ExecContext(ctx, `UPDATE audit_events SET action = 'tampered' WHERE id = 1`)
+	if err == nil {
+		t.Fatalf("expected update to fail")
+	}
+	if !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("expected immutable error on update, got: %v", err)
+	}
+
+	_, err = wdb.ExecContext(ctx, `DELETE FROM audit_events WHERE id = 1`)
+	if err == nil {
+		t.Fatalf("expected delete to fail")
+	}
+	if !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("expected immutable error on delete, got: %v", err)
+	}
+
+	var action string
+	if err := wdb.QueryRowContext(ctx, `SELECT action FROM audit_events WHERE id = 1`).Scan(&action); err != nil {
+		t.Fatalf("read audit row: %v", err)
+	}
+	if action != "record.created" {
+		t.Fatalf("unexpected action after blocked update: %s", action)
+	}
+
+	var cnt int
+	if err := wdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events`).Scan(&cnt); err != nil {
+		t.Fatalf("count audit rows: %v", err)
+	}
+	if cnt != 1 {
+		t.Fatalf("unexpected audit count: got %d want 1", cnt)
 	}
 }

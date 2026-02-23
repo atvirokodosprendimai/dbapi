@@ -25,8 +25,8 @@ Legend:
 ### Audit and Outbox Atomicity (`specs/phase1/audit-outbox.md`)
 
 - [x] Store mutation side effects baseline in `internal/adapters/sqlite/repository_test.go`
-- [ ] Add explicit migration-level immutability trigger assertions
-- [ ] Add explicit no-partial-commit error-path regression cases
+- [x] Migration-level immutability trigger assertions in `internal/adapters/sqlite/repository_test.go`
+- [x] No-partial-commit error-path regression cases in `internal/adapters/sqlite/record_event_store_test.go`
 - [x] Verification command: `go test ./internal/adapters/sqlite ./internal/core/usecase`
 
 ## Phase 2
